@@ -20,28 +20,30 @@ app.use(
   })
 );
 
-app.use((req, res, next) => {
-  res.set(
-    "Cache-Control",
-    "no-store"
-  );
+app.use(
+  (req, res, next) => {
 
-  next();
-});
+    res.set(
+      "Cache-Control",
+      "no-store"
+    );
+
+    next();
+
+  }
+);
 
 
 // ============================================================
 // Rooms
 // ============================================================
 //
-// room = {
-//   createdAt,
-//   receivers: Map<receiverId, {
-//      createdAt,
-//      offer,
-//      answer
-//   }>
-// }
+// rooms
+//   └ roomId
+//       └ receivers
+//           └ receiverId
+//               ├ offer
+//               └ answer
 //
 // ============================================================
 
@@ -49,65 +51,87 @@ const rooms =
   new Map();
 
 
-function getOrCreateRoom(roomId) {
-
-  let room =
-    rooms.get(roomId);
-
-  if (!room) {
-
-    room = {
-      createdAt:
-        Date.now(),
-
-      receivers:
-        new Map()
-    };
-
-    rooms.set(
-      roomId,
-      room
-    );
-  }
-
-  return room;
-}
-
-
-function validRoomId(value) {
+function validRoomId(
+  value
+) {
 
   return (
     typeof value === "string" &&
     /^[A-Za-z0-9_-]{1,32}$/
       .test(value)
   );
+
 }
 
 
-function validReceiverId(value) {
+function validReceiverId(
+  value
+) {
 
   return (
     typeof value === "string" &&
     /^[A-Za-z0-9_-]{1,64}$/
       .test(value)
   );
+
 }
 
 
-function validSignal(body) {
+function validSignal(
+  body
+) {
 
   return (
     body &&
     typeof body.sessionId ===
       "string" &&
-
+    body.sessionId.length >=
+      8 &&
     body.sdp &&
     typeof body.sdp.type ===
       "string" &&
-
     typeof body.sdp.sdp ===
       "string"
   );
+
+}
+
+
+function createRoom(
+  roomId
+) {
+
+  const room = {
+
+    createdAt:
+      Date.now(),
+
+    receivers:
+      new Map()
+
+  };
+
+
+  rooms.set(
+    roomId,
+    room
+  );
+
+
+  return room;
+
+}
+
+
+function getOrCreateRoom(
+  roomId
+) {
+
+  return (
+    rooms.get(roomId) ??
+    createRoom(roomId)
+  );
+
 }
 
 
@@ -115,50 +139,58 @@ function validSignal(body) {
 // Cleanup
 // ============================================================
 
-setInterval(() => {
+setInterval(
+  () => {
 
-  const now =
-    Date.now();
+    const now =
+      Date.now();
 
-  for (
-    const [roomId, room]
-    of rooms
-  ) {
 
     for (
-      const [receiverId, receiver]
-      of room.receivers
+      const [roomId, room]
+      of rooms
     ) {
 
+      for (
+        const [receiverId, receiver]
+        of room.receivers
+      ) {
+
+        if (
+          now -
+          receiver.updatedAt >
+          EXPIRE_MS
+        ) {
+
+          room.receivers.delete(
+            receiverId
+          );
+
+        }
+
+      }
+
+
       if (
-        now - receiver.createdAt >
+        room.receivers.size ===
+          0 &&
+        now -
+        room.createdAt >
         EXPIRE_MS
       ) {
 
-        room.receivers.delete(
-          receiverId
+        rooms.delete(
+          roomId
         );
 
       }
 
     }
 
+  },
 
-    if (
-      room.receivers.size === 0 &&
-      now - room.createdAt >
-        EXPIRE_MS
-    ) {
-
-      rooms.delete(
-        roomId
-      );
-
-    }
-
-  }
-
-}, 60_000);
+  60_000
+);
 
 
 // ============================================================
@@ -170,11 +202,19 @@ app.get(
   (req, res) => {
 
     res.json({
-      ok: true,
+
+      ok:
+        true,
+
       service:
         "WebRTC Caster",
+
       rooms:
-        rooms.size
+        rooms.size,
+
+      time:
+        Date.now()
+
     });
 
   }
@@ -194,7 +234,9 @@ app.post(
 
 
     if (
-      !validRoomId(roomId)
+      !validRoomId(
+        roomId
+      )
     ) {
 
       return res
@@ -220,7 +262,11 @@ app.post(
     room.receivers.set(
       receiverId,
       {
+
         createdAt:
+          Date.now(),
+
+        updatedAt:
           Date.now(),
 
         offer:
@@ -228,17 +274,21 @@ app.post(
 
         answer:
           null
+
       }
     );
 
 
     res.json({
-      ok: true,
+
+      ok:
+        true,
 
       room:
         roomId,
 
       receiverId
+
     });
 
   }
@@ -246,7 +296,7 @@ app.post(
 
 
 // ============================================================
-// Sender: receiver list
+// Receiver List
 // ============================================================
 
 app.get(
@@ -258,7 +308,9 @@ app.get(
 
 
     const room =
-      rooms.get(roomId);
+      rooms.get(
+        roomId
+      );
 
 
     if (!room) {
@@ -273,7 +325,9 @@ app.get(
     res.json({
 
       receivers:
-        [...room.receivers.keys()]
+        [
+          ...room.receivers.keys()
+        ]
 
     });
 
@@ -282,22 +336,27 @@ app.get(
 
 
 // ============================================================
-// OFFER POST
+// POST OFFER
 // ============================================================
 
 app.post(
   "/api/room/:room/peer/:receiver/offer",
   (req, res) => {
 
-    const {
-      room: roomId,
-      receiver: receiverId
-    } = req.params;
+    const roomId =
+      req.params.room;
+
+    const receiverId =
+      req.params.receiver;
 
 
     if (
-      !validRoomId(roomId) ||
-      !validReceiverId(receiverId)
+      !validRoomId(
+        roomId
+      ) ||
+      !validReceiverId(
+        receiverId
+      )
     ) {
 
       return res
@@ -311,7 +370,9 @@ app.post(
 
 
     if (
-      !validSignal(req.body)
+      !validSignal(
+        req.body
+      )
     ) {
 
       return res
@@ -325,7 +386,9 @@ app.post(
 
 
     const room =
-      rooms.get(roomId);
+      rooms.get(
+        roomId
+      );
 
 
     const receiver =
@@ -346,7 +409,7 @@ app.post(
     }
 
 
-    receiver.createdAt =
+    receiver.updatedAt =
       Date.now();
 
 
@@ -364,8 +427,6 @@ app.post(
     };
 
 
-    // 古いAnswerを破棄
-
     receiver.answer =
       null;
 
@@ -379,7 +440,7 @@ app.post(
 
 
 // ============================================================
-// OFFER GET
+// GET OFFER
 // ============================================================
 
 app.get(
@@ -421,7 +482,7 @@ app.get(
 
 
 // ============================================================
-// ANSWER POST
+// POST ANSWER
 // ============================================================
 
 app.post(
@@ -455,7 +516,9 @@ app.post(
 
 
     if (
-      !validSignal(req.body)
+      !validSignal(
+        req.body
+      )
     ) {
 
       return res
@@ -484,7 +547,7 @@ app.post(
     }
 
 
-    receiver.createdAt =
+    receiver.updatedAt =
       Date.now();
 
 
@@ -511,7 +574,7 @@ app.post(
 
 
 // ============================================================
-// ANSWER GET
+// GET ANSWER
 // ============================================================
 
 app.get(
@@ -553,22 +616,6 @@ app.get(
 
 
 // ============================================================
-// Web UI
-// ============================================================
-
-app.get(
-  "/",
-  (req, res) => {
-
-    res
-      .type("html")
-      .send(HTML);
-
-  }
-);
-
-
-// ============================================================
 // HTML
 // ============================================================
 
@@ -590,19 +637,24 @@ const HTML = String.raw`
 WebRTC Caster
 </title>
 
+
 <style>
 
 * {
   box-sizing: border-box;
 }
 
+
+html,
 body {
 
   margin: 0;
-  padding: 24px;
 
-  color: #eee;
+  min-height: 100%;
+
   background: #101114;
+
+  color: #eeeeee;
 
   font-family:
     system-ui,
@@ -610,26 +662,39 @@ body {
 
 }
 
+
+body {
+  padding: 24px;
+}
+
+
 main {
 
   width: 100%;
-  max-width: 800px;
+
+  max-width: 850px;
 
   margin: auto;
 
 }
 
+
 section {
 
-  padding: 20px;
   margin: 16px 0;
+
+  padding: 20px;
 
   background: #1b1d22;
 
-  border: 1px solid #333;
-  border-radius: 12px;
+  border:
+    1px solid #333;
+
+  border-radius:
+    12px;
 
 }
+
 
 input {
 
@@ -637,98 +702,161 @@ input {
 
   padding: 12px;
 
-  font-size: 22px;
-
   color: white;
-  background: #272a30;
 
-  border: 1px solid #555;
-  border-radius: 8px;
+  background: #292c33;
+
+  border:
+    1px solid #555;
+
+  border-radius:
+    8px;
+
+  font-size:
+    22px;
 
 }
+
 
 button {
 
-  margin: 5px 3px;
-  padding: 12px 18px;
+  margin:
+    6px 3px;
 
-  border: 0;
-  border-radius: 8px;
+  padding:
+    12px 18px;
 
-  color: white;
-  background: #2868d8;
+  border:
+    none;
 
-  font-size: 16px;
+  border-radius:
+    8px;
 
-  cursor: pointer;
+  color:
+    white;
+
+  background:
+    #2868d8;
+
+  font-size:
+    16px;
+
+  cursor:
+    pointer;
 
 }
+
 
 button:hover {
-  filter: brightness(1.15);
+  filter:
+    brightness(1.15);
 }
 
-#fullscreen {
-  background: #7544c7;
+
+#senderConnect {
+  background:
+    #16834b;
 }
+
+
+#fullscreen {
+  background:
+    #7544c7;
+}
+
 
 #status {
 
-  min-height: 60px;
+  min-height:
+    60px;
 
-  padding: 15px;
-  margin: 15px 0;
+  margin:
+    15px 0;
 
-  white-space: pre-wrap;
+  padding:
+    15px;
 
-  color: #90d8ff;
-  background: #20232a;
+  color:
+    #90d8ff;
 
-  border-radius: 8px;
+  background:
+    #20232a;
 
-  font-family: monospace;
+  border-radius:
+    8px;
+
+  white-space:
+    pre-wrap;
+
+  font-family:
+    monospace;
 
 }
+
 
 video {
 
-  display: block;
+  display:
+    block;
 
-  width: 100%;
+  width:
+    100%;
 
-  max-height: 75vh;
+  max-height:
+    75vh;
 
-  margin-top: 15px;
+  margin-top:
+    15px;
 
-  background: black;
+  background:
+    black;
 
-  border-radius: 10px;
+  border-radius:
+    10px;
 
-  object-fit: contain;
+  object-fit:
+    contain;
 
 }
+
 
 video:fullscreen {
 
-  width: 100vw;
-  height: 100vh;
+  width:
+    100vw;
 
-  max-width: none;
-  max-height: none;
+  height:
+    100vh;
 
-  margin: 0;
+  max-width:
+    none;
 
-  border-radius: 0;
+  max-height:
+    none;
 
-  background: black;
+  margin:
+    0;
 
-  object-fit: contain;
+  background:
+    black;
+
+  border-radius:
+    0;
+
+  object-fit:
+    contain;
 
 }
 
+
 .small {
-  color: #aaa;
-  font-size: 14px;
+
+  color:
+    #aaa;
+
+  font-size:
+    14px;
+
 }
 
 </style>
@@ -739,6 +867,7 @@ video:fullscreen {
 <body>
 
 <main>
+
 
 <h1>
 WebRTC Caster
@@ -759,6 +888,7 @@ WebRTC Caster
 <input
   id="room"
   value="1111"
+  maxlength="32"
 >
 
 </section>
@@ -770,17 +900,31 @@ WebRTC Caster
 送信
 </h2>
 
-<button id="startSender">
-① 画面共有
+
+<button id="senderStart">
+① 画面共有を開始
 </button>
 
-<button id="connectReceivers">
-③ 受信者を接続
+
+<button id="senderConnect">
+③ 受信者を確認・接続
 </button>
+
 
 <p class="small">
-受信者が②を押したあと③。受信者が④を押したら③をもう一度。
+
+受信者が②を押す
+→ 送信側で③
+→ 受信者が④
+→ 送信側でもう一度③
+
 </p>
+
+
+<div
+  id="captureInfo"
+  class="small">
+</div>
 
 </section>
 
@@ -791,17 +935,21 @@ WebRTC Caster
 受信
 </h2>
 
-<button id="joinReceiver">
+
+<button id="receiverJoin">
 ② 受信準備
 </button>
 
-<button id="finishReceiver">
-④ 接続
+
+<button id="receiverConnect">
+④ 映像に接続
 </button>
 
+
 <button id="fullscreen">
-⛶ 全画面
+⛶ 全画面表示
 </button>
+
 
 <video
   id="video"
@@ -809,17 +957,40 @@ WebRTC Caster
   playsinline
 ></video>
 
+
 </section>
+
 
 </main>
 
 
 <script>
 
+// ============================================================
+// State
+// ============================================================
+
+const senderPeers =
+  new Map();
+
+
+let stream =
+  null;
+
+
+let receiverId =
+  null;
+
+
+let receiverPeer =
+  null;
+
+
 const statusBox =
   document.getElementById(
     "status"
   );
+
 
 const video =
   document.getElementById(
@@ -827,25 +998,24 @@ const video =
   );
 
 
-let stream =
-  null;
-
-let receiverId =
-  null;
-
-let receiverPeer =
-  null;
+const captureInfo =
+  document.getElementById(
+    "captureInfo"
+  );
 
 
-// sender側
+// ============================================================
+// UI
+// ============================================================
 
-const senderPeers =
-  new Map();
+function status(
+  text
+) {
 
+  console.log(
+    text
+  );
 
-function status(text) {
-
-  console.log(text);
 
   statusBox.textContent =
     text;
@@ -853,18 +1023,20 @@ function status(text) {
 }
 
 
-function room() {
+function getRoom() {
 
-  const value =
+  const room =
     document
-      .getElementById("room")
+      .getElementById(
+        "room"
+      )
       .value
       .trim();
 
 
   if (
     !/^[A-Za-z0-9_-]{1,32}$/
-      .test(value)
+      .test(room)
   ) {
 
     throw new Error(
@@ -874,44 +1046,101 @@ function room() {
   }
 
 
-  return value;
+  return room;
 
 }
 
 
+// ============================================================
+// HTTP
+// ============================================================
+
 async function request(
-  path,
+  url,
   options = {}
 ) {
 
-  const response =
-    await fetch(
-      path,
-      {
-        ...options,
-        cache: "no-store"
-      }
+  const controller =
+    new AbortController();
+
+
+  const timer =
+    setTimeout(
+      () =>
+        controller.abort(),
+      15000
     );
 
 
-  const data =
-    await response.json();
+  try {
+
+    const response =
+      await fetch(
+        url,
+        {
+          ...options,
+
+          cache:
+            "no-store",
+
+          signal:
+            controller.signal
+        }
+      );
 
 
-  if (!response.ok) {
+    const data =
+      await response.json();
 
-    throw new Error(
-      data.error ??
-      "HTTP Error"
+
+    if (
+      !response.ok
+    ) {
+
+      throw new Error(
+        data.error ??
+        "HTTP Error"
+      );
+
+    }
+
+
+    return data;
+
+  }
+
+  catch (error) {
+
+    if (
+      error.name ===
+      "AbortError"
+    ) {
+
+      throw new Error(
+        "HTTP通信がタイムアウトしました"
+      );
+
+    }
+
+
+    throw error;
+
+  }
+
+  finally {
+
+    clearTimeout(
+      timer
     );
 
   }
 
-
-  return data;
-
 }
 
+
+// ============================================================
+// ICE gathering
+// ============================================================
 
 function waitICE(
   pc,
@@ -931,7 +1160,8 @@ function waitICE(
   return new Promise(
     resolve => {
 
-      let done = false;
+      let done =
+        false;
 
 
       function finish() {
@@ -939,14 +1169,21 @@ function waitICE(
         if (done)
           return;
 
-        done = true;
 
-        clearTimeout(timer);
+        done =
+          true;
+
+
+        clearTimeout(
+          timer
+        );
+
 
         pc.removeEventListener(
           "icegatheringstatechange",
           change
         );
+
 
         resolve();
 
@@ -954,6 +1191,12 @@ function waitICE(
 
 
       function change() {
+
+        console.log(
+          "ICE:",
+          pc.iceGatheringState
+        );
+
 
         if (
           pc.iceGatheringState ===
@@ -984,6 +1227,10 @@ function waitICE(
 
 }
 
+
+// ============================================================
+// PeerConnection
+// ============================================================
 
 function createPeer() {
 
@@ -1018,18 +1265,164 @@ function createPeer() {
     };
 
 
+  pc.oniceconnectionstatechange =
+    () => {
+
+      console.log(
+        "ICE connection:",
+        pc.iceConnectionState
+      );
+
+    };
+
+
   return pc;
 
 }
 
 
 // ============================================================
-// ① Sender
+// 720p制限
+// ============================================================
+
+async function add720pTrack(
+  pc,
+  track,
+  sourceStream
+) {
+
+  const sender =
+    pc.addTrack(
+      track,
+      sourceStream
+    );
+
+
+  if (
+    track.kind !==
+    "video"
+  ) {
+
+    return sender;
+
+  }
+
+
+  const settings =
+    track.getSettings();
+
+
+  const width =
+    settings.width ||
+    1280;
+
+
+  const height =
+    settings.height ||
+    720;
+
+
+  // 1280x720の枠内に収める。
+  // 1未満にはしないので拡大はしない。
+
+  const scale =
+    Math.max(
+      1,
+
+      width /
+        1280,
+
+      height /
+        720
+    );
+
+
+  try {
+
+    const parameters =
+      sender.getParameters();
+
+
+    if (
+      !parameters.encodings ||
+      parameters.encodings.length ===
+        0
+    ) {
+
+      parameters.encodings =
+        [{}];
+
+    }
+
+
+    parameters
+      .encodings[0]
+      .scaleResolutionDownBy =
+        scale;
+
+
+    parameters
+      .encodings[0]
+      .maxFramerate =
+        30;
+
+
+    // 2.5Mbps
+
+    parameters
+      .encodings[0]
+      .maxBitrate =
+        2500000;
+
+
+    await sender
+      .setParameters(
+        parameters
+      );
+
+
+    console.log(
+      "720p limit:",
+      {
+        width,
+        height,
+        scale,
+        maxFramerate:
+          30,
+        maxBitrate:
+          2500000
+      }
+    );
+
+  }
+
+  catch (error) {
+
+    // ブラウザによっては
+    // setParametersの一部制限を
+    // 受け付けない場合がある。
+    // WebRTCそのものは続行する。
+
+    console.warn(
+      "720p制限の適用失敗:",
+      error
+    );
+
+  }
+
+
+  return sender;
+
+}
+
+
+// ============================================================
+// ① Sender start
 // ============================================================
 
 document
 .getElementById(
-  "startSender"
+  "senderStart"
 )
 .onclick =
 async () => {
@@ -1047,28 +1440,104 @@ async () => {
         .getDisplayMedia({
 
           video: {
+
             frameRate: {
               ideal: 30,
               max: 30
             }
+
           },
 
-          audio: false
+          audio:
+            false
 
         });
 
 
+    const track =
+      stream
+        .getVideoTracks()[0];
+
+
+    if (track) {
+
+      // 動画・動きを優先
+      try {
+
+        track.contentHint =
+          "motion";
+
+      }
+
+      catch {}
+
+
+      const settings =
+        track.getSettings();
+
+
+      captureInfo.textContent =
+        "キャプチャ: " +
+        (
+          settings.width ??
+          "?"
+        ) +
+        "×" +
+        (
+          settings.height ??
+          "?"
+        ) +
+        " / " +
+        (
+          settings.frameRate ??
+          "?"
+        ) +
+        "fps\\n" +
+        "送信上限: 1280×720 / 30fps / 2.5Mbps";
+
+
+      track.onended =
+        () => {
+
+          status(
+            "画面共有を終了しました"
+          );
+
+
+          for (
+            const info
+            of senderPeers.values()
+          ) {
+
+            info.pc.close();
+
+          }
+
+
+          senderPeers.clear();
+
+        };
+
+    }
+
+
     status(
-      "画面共有準備完了"
+      "① 完了\\n" +
+      "受信者に②を押してもらってください。"
     );
 
   }
 
-  catch (e) {
+  catch (error) {
+
+    console.error(
+      error
+    );
+
 
     status(
-      "送信エラー\\n" +
-      e.message
+      "画面共有エラー\\n" +
+      error.message
     );
 
   }
@@ -1077,12 +1546,12 @@ async () => {
 
 
 // ============================================================
-// ② Receiver
+// ② Receiver Join
 // ============================================================
 
 document
 .getElementById(
-  "joinReceiver"
+  "receiverJoin"
 )
 .onclick =
 async () => {
@@ -1093,11 +1562,14 @@ async () => {
       await request(
 
         "/api/room/" +
-        encodeURIComponent(room()) +
+        encodeURIComponent(
+          getRoom()
+        ) +
         "/receiver",
 
         {
-          method: "POST"
+          method:
+            "POST"
         }
 
       );
@@ -1108,19 +1580,23 @@ async () => {
 
 
     status(
-      "受信準備完了\\n" +
-      "Receiver ID: " +
-      receiverId +
-      "\\n\\n送信側で③を押してください。"
+      "② 完了\\n" +
+      "受信準備ができました。\\n" +
+      "送信側で③を押してください。"
     );
 
   }
 
-  catch (e) {
+  catch (error) {
+
+    console.error(
+      error
+    );
+
 
     status(
       "受信準備エラー\\n" +
-      e.message
+      error.message
     );
 
   }
@@ -1129,12 +1605,12 @@ async () => {
 
 
 // ============================================================
-// ③ Sender
+// ③ Sender Connect
 // ============================================================
 
 document
 .getElementById(
-  "connectReceivers"
+  "senderConnect"
 )
 .onclick =
 async () => {
@@ -1144,20 +1620,34 @@ async () => {
     if (!stream) {
 
       throw new Error(
-        "先に①を実行してください"
+        "先に①で画面共有を開始してください"
       );
 
     }
+
+
+    const room =
+      getRoom();
 
 
     const data =
       await request(
 
         "/api/room/" +
-        encodeURIComponent(room()) +
+        encodeURIComponent(
+          room
+        ) +
         "/receivers"
 
       );
+
+
+    let newPeers =
+      0;
+
+
+    let connectedAnswers =
+      0;
 
 
     for (
@@ -1165,20 +1655,25 @@ async () => {
       of data.receivers
     ) {
 
-      // ----------------------------------
-      // 既存Peer
-      // ----------------------------------
+      // ======================================================
+      // Existing Peer
+      // ======================================================
 
       if (
-        senderPeers.has(id)
+        senderPeers.has(
+          id
+        )
       ) {
 
         const info =
-          senderPeers.get(id);
+          senderPeers.get(
+            id
+          );
 
 
         if (
-          !info.pc.remoteDescription
+          !info.pc
+            .remoteDescription
         ) {
 
           try {
@@ -1187,9 +1682,13 @@ async () => {
               await request(
 
                 "/api/room/" +
-                encodeURIComponent(room()) +
+                encodeURIComponent(
+                  room
+                ) +
                 "/peer/" +
-                encodeURIComponent(id) +
+                encodeURIComponent(
+                  id
+                ) +
                 "/answer"
 
               );
@@ -1204,6 +1703,9 @@ async () => {
                 .setRemoteDescription(
                   answer.sdp
                 );
+
+
+              connectedAnswers++;
 
             }
 
@@ -1226,9 +1728,9 @@ async () => {
       }
 
 
-      // ----------------------------------
-      // New receiver
-      // ----------------------------------
+      // ======================================================
+      // New Peer
+      // ======================================================
 
       const pc =
         createPeer();
@@ -1239,7 +1741,8 @@ async () => {
         of stream.getTracks()
       ) {
 
-        pc.addTrack(
+        await add720pTrack(
+          pc,
           track,
           stream
         );
@@ -1248,7 +1751,8 @@ async () => {
 
 
       const offer =
-        await pc.createOffer();
+        await pc
+          .createOffer();
 
 
       await pc
@@ -1278,9 +1782,13 @@ async () => {
       await request(
 
         "/api/room/" +
-        encodeURIComponent(room()) +
+        encodeURIComponent(
+          room
+        ) +
         "/peer/" +
-        encodeURIComponent(id) +
+        encodeURIComponent(
+          id
+        ) +
         "/offer",
 
         {
@@ -1289,8 +1797,10 @@ async () => {
             "POST",
 
           headers: {
+
             "Content-Type":
               "application/json"
+
           },
 
           body:
@@ -1307,24 +1817,39 @@ async () => {
 
       );
 
+
+      newPeers++;
+
     }
 
 
     status(
+      "③ 処理完了\\n\\n" +
       "受信者: " +
       data.receivers.length +
+      "人\\n" +
+      "新規接続準備: " +
+      newPeers +
+      "人\\n" +
+      "Answer適用: " +
+      connectedAnswers +
       "人\\n\\n" +
       "新規受信者は④を押してください。\\n" +
-      "④の後、③をもう一度押します。"
+      "④の後、送信側で③をもう一度押します。"
     );
 
   }
 
-  catch (e) {
+  catch (error) {
+
+    console.error(
+      error
+    );
+
 
     status(
-      "接続処理エラー\\n" +
-      e.message
+      "送信接続エラー\\n" +
+      error.message
     );
 
   }
@@ -1333,12 +1858,12 @@ async () => {
 
 
 // ============================================================
-// ④ Receiver
+// ④ Receiver Connect
 // ============================================================
 
 document
 .getElementById(
-  "finishReceiver"
+  "receiverConnect"
 )
 .onclick =
 async () => {
@@ -1354,13 +1879,26 @@ async () => {
     }
 
 
+    const room =
+      getRoom();
+
+
+    status(
+      "Offerを取得しています..."
+    );
+
+
     const offer =
       await request(
 
         "/api/room/" +
-        encodeURIComponent(room()) +
+        encodeURIComponent(
+          room
+        ) +
         "/peer/" +
-        encodeURIComponent(receiverId) +
+        encodeURIComponent(
+          receiverId
+        ) +
         "/offer"
 
       );
@@ -1374,11 +1912,57 @@ async () => {
       event => {
 
         if (
+          event.streams &&
           event.streams[0]
         ) {
 
           video.srcObject =
             event.streams[0];
+
+
+          video
+            .play()
+            .catch(
+              console.error
+            );
+
+        }
+
+      };
+
+
+    receiverPeer
+      .onconnectionstatechange =
+      () => {
+
+        console.log(
+          "Receiver WebRTC:",
+          receiverPeer.connectionState
+        );
+
+
+        if (
+          receiverPeer
+            .connectionState ===
+          "connected"
+        ) {
+
+          status(
+            "接続成功！\\n最大720pで受信中"
+          );
+
+        }
+
+
+        if (
+          receiverPeer
+            .connectionState ===
+          "failed"
+        ) {
+
+          status(
+            "WebRTC接続に失敗しました"
+          );
 
         }
 
@@ -1410,9 +1994,13 @@ async () => {
     await request(
 
       "/api/room/" +
-      encodeURIComponent(room()) +
+      encodeURIComponent(
+        room
+      ) +
       "/peer/" +
-      encodeURIComponent(receiverId) +
+      encodeURIComponent(
+        receiverId
+      ) +
       "/answer",
 
       {
@@ -1421,8 +2009,10 @@ async () => {
           "POST",
 
         headers: {
+
           "Content-Type":
             "application/json"
+
         },
 
         body:
@@ -1443,17 +2033,22 @@ async () => {
 
 
     status(
-      "Answer送信完了\\n" +
+      "④ 完了\\n" +
       "送信側で③をもう一度押してください。"
     );
 
   }
 
-  catch (e) {
+  catch (error) {
+
+    console.error(
+      error
+    );
+
 
     status(
-      "受信エラー\\n" +
-      e.message
+      "受信接続エラー\\n" +
+      error.message
     );
 
   }
@@ -1477,7 +2072,7 @@ async () => {
     if (!video.srcObject) {
 
       throw new Error(
-        "まだ映像がありません"
+        "まだ映像を受信していません"
       );
 
     }
@@ -1501,13 +2096,26 @@ async () => {
 
     }
 
+    else {
+
+      throw new Error(
+        "Fullscreen API非対応です"
+      );
+
+    }
+
   }
 
-  catch (e) {
+  catch (error) {
+
+    console.error(
+      error
+    );
+
 
     status(
       "全画面エラー\\n" +
-      e.message
+      error.message
     );
 
   }
@@ -1517,8 +2125,43 @@ async () => {
 </script>
 
 </body>
+
 </html>
 `;
+
+
+// ============================================================
+// UI
+// ============================================================
+
+app.get(
+  "/",
+  (req, res) => {
+
+    res
+      .type("html")
+      .send(HTML);
+
+  }
+);
+
+
+// ============================================================
+// 404
+// ============================================================
+
+app.use(
+  (req, res) => {
+
+    res
+      .status(404)
+      .json({
+        error:
+          "Not found"
+      });
+
+  }
+);
 
 
 // ============================================================
@@ -1531,7 +2174,7 @@ app.listen(
   () => {
 
     console.log(
-      "WebRTC Caster listening on port",
+      "WebRTC Caster running on port",
       PORT
     );
 
