@@ -9,7 +9,6 @@ RUN npm install --omit=dev
 COPY server.js ./
 
 ENV NODE_ENV=production
-ENV PORT=10000
 
 EXPOSE 10000
 
