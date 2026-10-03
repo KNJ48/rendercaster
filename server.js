@@ -5,15 +5,18 @@ import crypto from "node:crypto";
 
 
 // ============================================================
-// Config
+// CONFIG
 // ============================================================
 
 const PORT =
-  Number(process.env.PORT || 10000);
+  Number(
+    process.env.PORT ||
+    10000
+  );
 
 
 // ============================================================
-// Express
+// HTTP
 // ============================================================
 
 const app =
@@ -21,42 +24,20 @@ const app =
 
 
 const server =
-  http.createServer(app);
+  http.createServer(
+    app
+  );
 
 
 // ============================================================
-// WebSocket
-// ============================================================
-
-const wss =
-  new WebSocketServer({
-    server,
-    path: "/signal"
-  });
-
-
-// ============================================================
-// Rooms
-// ============================================================
-//
-// room:
-//
-// {
-//   sender: WebSocket | null,
-//
-//   receivers:
-//     Map<receiverId, WebSocket>
-// }
-//
+// ROOMS
 // ============================================================
 
 const rooms =
   new Map();
 
 
-function getRoom(
-  id
-) {
+function getRoom(id) {
 
   let room =
     rooms.get(id);
@@ -89,12 +70,23 @@ function getRoom(
 
 
 // ============================================================
-// Send JSON safely
+// WebSocket
 // ============================================================
+
+const wss =
+  new WebSocketServer({
+
+    server,
+
+    path:
+      "/signal"
+
+  });
+
 
 function send(
   ws,
-  data
+  message
 ) {
 
   if (
@@ -105,7 +97,7 @@ function send(
 
     ws.send(
       JSON.stringify(
-        data
+        message
       )
     );
 
@@ -115,7 +107,7 @@ function send(
 
 
 // ============================================================
-// WebSocket Signaling
+// SIGNALING
 // ============================================================
 
 wss.on(
@@ -133,9 +125,9 @@ wss.on(
       null;
 
 
-    // --------------------------------------------------------
-    // Message
-    // --------------------------------------------------------
+    // ========================================================
+    // MESSAGE
+    // ========================================================
 
     ws.on(
       "message",
@@ -151,7 +143,7 @@ wss.on(
 
 
           // ==================================================
-          // Sender joins
+          // Sender join
           // ==================================================
 
           if (
@@ -161,7 +153,8 @@ wss.on(
 
             roomId =
               String(
-                msg.room || ""
+                msg.room ||
+                ""
               );
 
 
@@ -196,10 +189,12 @@ wss.on(
               );
 
 
-            // 既存Senderがいるなら切断
+            // 既存Senderを置換
+
             if (
               room.sender &&
-              room.sender !== ws
+              room.sender !==
+                ws
             ) {
 
               send(
@@ -229,7 +224,8 @@ wss.on(
             );
 
 
-            // 先にReceiverが待っていた場合
+            // 先に待っていたReceiverを通知
+
             for (
               const id
               of room.receivers.keys()
@@ -255,7 +251,7 @@ wss.on(
 
 
           // ==================================================
-          // Receiver joins
+          // Receiver join
           // ==================================================
 
           if (
@@ -265,7 +261,8 @@ wss.on(
 
             roomId =
               String(
-                msg.room || ""
+                msg.room ||
+                ""
               );
 
 
@@ -326,7 +323,6 @@ wss.on(
             );
 
 
-            // Senderに通知
             send(
               room.sender,
               {
@@ -345,23 +341,14 @@ wss.on(
 
           // ==================================================
           // Offer
-          // Sender -> Receiver
           // ==================================================
 
           if (
             msg.type ===
-            "offer"
-          ) {
-
-            if (
-              role !==
+            "offer" &&
+            role ===
               "sender"
-            ) {
-
-              return;
-
-            }
-
+          ) {
 
             const room =
               rooms.get(
@@ -397,23 +384,14 @@ wss.on(
 
           // ==================================================
           // Answer
-          // Receiver -> Sender
           // ==================================================
 
           if (
             msg.type ===
-            "answer"
-          ) {
-
-            if (
-              role !==
+            "answer" &&
+            role ===
               "receiver"
-            ) {
-
-              return;
-
-            }
-
+          ) {
 
             const room =
               rooms.get(
@@ -528,9 +506,9 @@ wss.on(
     );
 
 
-    // --------------------------------------------------------
-    // Close
-    // --------------------------------------------------------
+    // ========================================================
+    // CLOSE
+    // ========================================================
 
     ws.on(
       "close",
@@ -551,22 +529,17 @@ wss.on(
           return;
 
 
-        // Sender left
+        // Sender
 
         if (
           role ===
-          "sender"
+            "sender" &&
+          room.sender ===
+            ws
         ) {
 
-          if (
-            room.sender ===
-            ws
-          ) {
-
-            room.sender =
-              null;
-
-          }
+          room.sender =
+            null;
 
 
           for (
@@ -587,7 +560,7 @@ wss.on(
         }
 
 
-        // Receiver left
+        // Receiver
 
         if (
           role ===
@@ -660,7 +633,8 @@ WebRTC Caster
 <style>
 
 * {
-  box-sizing: border-box;
+  box-sizing:
+    border-box;
 }
 
 
@@ -693,7 +667,7 @@ main {
 
   width: 100%;
 
-  max-width: 850px;
+  max-width: 900px;
 
   margin: auto;
 
@@ -702,9 +676,11 @@ main {
 
 section {
 
-  margin: 16px 0;
+  margin:
+    16px 0;
 
-  padding: 20px;
+  padding:
+    20px;
 
   background:
     #1b1d22;
@@ -720,13 +696,17 @@ section {
 
 input {
 
-  width: 100%;
+  width:
+    100%;
 
-  padding: 12px;
+  padding:
+    12px;
 
-  font-size: 22px;
+  font-size:
+    22px;
 
-  color: white;
+  color:
+    white;
 
   background:
     #292c33;
@@ -754,7 +734,8 @@ button {
   border-radius:
     8px;
 
-  color: white;
+  color:
+    white;
 
   background:
     #2868d8;
@@ -777,12 +758,6 @@ button:hover {
 #sendButton {
   background:
     #16834b;
-}
-
-
-#receiveButton {
-  background:
-    #2868d8;
 }
 
 
@@ -821,16 +796,16 @@ button:hover {
 }
 
 
-#info {
+.info {
 
   margin-top:
     12px;
 
   padding:
-    10px;
+    12px;
 
   color:
-    #aaa;
+    #bbb;
 
   background:
     #15171b;
@@ -841,20 +816,22 @@ button:hover {
   white-space:
     pre-wrap;
 
-  font-size:
-    13px;
-
   font-family:
     monospace;
+
+  font-size:
+    13px;
 
 }
 
 
 video {
 
-  display: block;
+  display:
+    block;
 
-  width: 100%;
+  width:
+    100%;
 
   max-height:
     75vh;
@@ -953,7 +930,7 @@ WebRTC Caster
 <section>
 
 <h2>
-送信する
+送信
 </h2>
 
 
@@ -963,14 +940,25 @@ WebRTC Caster
 
 
 <p class="small">
-押した後、共有する画面を選択してください。
-受信者は自動的に接続されます。
+最大720p / 最大60FPS /
+20Mbps / 受信端末。
+解像度維持優先。
 </p>
 
 
-<div id="info">
+<div
+  id="senderInfo"
+  class="info">
 未送信
 </div>
+
+
+<div
+  id="senderStats"
+  class="info">
+送信統計：未接続
+</div>
+
 
 </section>
 
@@ -978,7 +966,7 @@ WebRTC Caster
 <section>
 
 <h2>
-受信する
+受信
 </h2>
 
 
@@ -988,13 +976,8 @@ WebRTC Caster
 
 
 <button id="fullscreen">
-⛶ 全画面表示
+⛶ 全画面
 </button>
-
-
-<p class="small">
-同じルームIDの送信者へ自動接続します。
-</p>
 
 
 <video
@@ -1002,6 +985,13 @@ WebRTC Caster
   autoplay
   playsinline
 ></video>
+
+
+<div
+  id="receiverStats"
+  class="info">
+受信統計：未接続
+</div>
 
 
 </section>
@@ -1013,7 +1003,7 @@ WebRTC Caster
 <script>
 
 // ============================================================
-// State
+// STATE
 // ============================================================
 
 let socket =
@@ -1032,14 +1022,9 @@ let receiverPeer =
   null;
 
 
-// Sender:
-// receiverId -> RTCPeerConnection
-
 const senderPeers =
   new Map();
 
-
-// ICEがRemoteDescriptionより先に来た場合の待機場所
 
 const pendingSenderICE =
   new Map();
@@ -1049,15 +1034,43 @@ let pendingReceiverICE =
   [];
 
 
+const previousSenderStats =
+  new Map();
+
+
+let previousReceiverBytes =
+  0;
+
+
+let previousReceiverTime =
+  0;
+
+
+// ============================================================
+// DOM
+// ============================================================
+
 const statusBox =
   document.getElementById(
     "status"
   );
 
 
-const infoBox =
+const senderInfo =
   document.getElementById(
-    "info"
+    "senderInfo"
+  );
+
+
+const senderStats =
+  document.getElementById(
+    "senderStats"
+  );
+
+
+const receiverStats =
+  document.getElementById(
+    "receiverStats"
   );
 
 
@@ -1112,7 +1125,7 @@ function getRoom() {
 
 
 // ============================================================
-// WebSocket
+// SOCKET
 // ============================================================
 
 function connectSocket() {
@@ -1152,10 +1165,6 @@ function connectSocket() {
       socket.onopen =
         () => {
 
-          console.log(
-            "WebSocket connected"
-          );
-
           resolve();
 
         };
@@ -1166,7 +1175,7 @@ function connectSocket() {
 
           reject(
             new Error(
-              "シグナリングサーバーへ接続できません"
+              "WebSocket接続失敗"
             )
           );
 
@@ -1193,27 +1202,10 @@ function connectSocket() {
           catch (error) {
 
             console.error(
-              "Signal error:",
               error
             );
 
-
-            setStatus(
-              "シグナリングエラー\\n" +
-              error.message
-            );
-
           }
-
-        };
-
-
-      socket.onclose =
-        () => {
-
-          console.log(
-            "WebSocket closed"
-          );
 
         };
 
@@ -1234,7 +1226,7 @@ function signal(
   ) {
 
     throw new Error(
-      "WebSocketが接続されていません"
+      "WebSocket未接続"
     );
 
   }
@@ -1250,61 +1242,46 @@ function signal(
 
 
 // ============================================================
-// Peer
+// PEER
 // ============================================================
 
 function createPeer() {
 
-  const pc =
-    new RTCPeerConnection({
+  return new RTCPeerConnection({
 
-      iceServers: [
+    iceServers: [
 
-        {
-          urls:
-            "stun:stun.l.google.com:19302"
-        },
+      {
+        urls:
+          "stun:stun.l.google.com:19302"
+      },
 
-        {
-          urls:
-            "stun:stun1.l.google.com:19302"
-        }
+      {
+        urls:
+          "stun:stun1.l.google.com:19302"
+      }
 
-      ]
+    ]
 
-    });
-
-
-  pc.onconnectionstatechange =
-    () => {
-
-      console.log(
-        "WebRTC:",
-        pc.connectionState
-      );
-
-    };
-
-
-  return pc;
+  });
 
 }
 
 
 // ============================================================
-// 720p / 20Mbps / resolution priority
+// VIDEO SETTINGS
 // ============================================================
 
 async function addVideoTrack(
   pc,
   track,
-  stream
+  sourceStream
 ) {
 
   const sender =
     pc.addTrack(
       track,
-      stream
+      sourceStream
     );
 
 
@@ -1371,7 +1348,7 @@ async function addVideoTrack(
     params
       .encodings[0]
       .maxFramerate =
-        30;
+        60;
 
 
     params
@@ -1395,7 +1372,7 @@ async function addVideoTrack(
   catch (error) {
 
     console.warn(
-      "Video parameter warning:",
+      "setParameters:",
       error
     );
 
@@ -1405,7 +1382,7 @@ async function addVideoTrack(
 
 
 // ============================================================
-// Sender creates peer automatically
+// SENDER PEER
 // ============================================================
 
 async function createSenderPeer(
@@ -1415,15 +1392,9 @@ async function createSenderPeer(
   if (
     senderPeers.has(
       receiverId
-    )
+    ) ||
+    !localStream
   ) {
-
-    return;
-
-  }
-
-
-  if (!localStream) {
 
     return;
 
@@ -1439,10 +1410,6 @@ async function createSenderPeer(
     pc
   );
 
-
-  // ----------------------------------------------------------
-  // ICE
-  // ----------------------------------------------------------
 
   pc.onicecandidate =
     event => {
@@ -1468,43 +1435,6 @@ async function createSenderPeer(
     };
 
 
-  pc.onconnectionstatechange =
-    () => {
-
-      console.log(
-        receiverId,
-        pc.connectionState
-      );
-
-
-      updateSenderInfo();
-
-
-      if (
-        pc.connectionState ===
-          "failed" ||
-        pc.connectionState ===
-          "closed"
-      ) {
-
-        pc.close();
-
-        senderPeers.delete(
-          receiverId
-        );
-
-
-        updateSenderInfo();
-
-      }
-
-    };
-
-
-  // ----------------------------------------------------------
-  // Track
-  // ----------------------------------------------------------
-
   for (
     const track
     of localStream.getTracks()
@@ -1518,10 +1448,6 @@ async function createSenderPeer(
 
   }
 
-
-  // ----------------------------------------------------------
-  // Offer
-  // ----------------------------------------------------------
 
   const offer =
     await pc.createOffer();
@@ -1546,16 +1472,24 @@ async function createSenderPeer(
   });
 
 
-  updateSenderInfo();
+  pc.onconnectionstatechange =
+    () => {
+
+      updateSenderOverview();
+
+    };
+
+
+  updateSenderOverview();
 
 }
 
 
 // ============================================================
-// Sender info
+// SENDER OVERVIEW
 // ============================================================
 
-function updateSenderInfo() {
+function updateSenderOverview() {
 
   let connected =
     0;
@@ -1578,31 +1512,27 @@ function updateSenderInfo() {
   }
 
 
-  infoBox.textContent =
+  senderInfo.textContent =
     "接続中: " +
     connected +
     "台\\n" +
-    "接続処理中を含む: " +
+    "Peer数: " +
     senderPeers.size +
     "台\\n" +
-    "最大映像: 1280×720 / 30fps\\n" +
-    "帯域上限: 20Mbps / 受信者\\n" +
-    "品質方針: 解像度優先";
+    "最大: 1280×720 / 60FPS\\n" +
+    "最大20Mbps / 受信端末\\n" +
+    "解像度優先";
 
 }
 
 
 // ============================================================
-// Handle signaling
+// SIGNAL
 // ============================================================
 
 async function handleSignal(
   msg
 ) {
-
-  // ----------------------------------------------------------
-  // Error
-  // ----------------------------------------------------------
 
   if (
     msg.type ===
@@ -1615,10 +1545,6 @@ async function handleSignal(
 
   }
 
-
-  // ----------------------------------------------------------
-  // Sender ready
-  // ----------------------------------------------------------
 
   if (
     msg.type ===
@@ -1634,40 +1560,25 @@ async function handleSignal(
   }
 
 
-  // ----------------------------------------------------------
-  // Receiver joined
-  // ----------------------------------------------------------
-
   if (
     msg.type ===
-    "receiver-joined" &&
+      "receiver-joined" &&
     mode ===
       "sender"
   ) {
 
-    console.log(
-      "Receiver joined:",
-      msg.receiverId
-    );
-
-
     await createSenderPeer(
       msg.receiverId
     );
-
 
     return;
 
   }
 
 
-  // ----------------------------------------------------------
-  // Receiver left
-  // ----------------------------------------------------------
-
   if (
     msg.type ===
-    "receiver-left" &&
+      "receiver-left" &&
     mode ===
       "sender"
   ) {
@@ -1686,23 +1597,23 @@ async function handleSignal(
         msg.receiverId
       );
 
+      previousSenderStats.delete(
+        msg.receiverId
+      );
+
     }
 
 
-    updateSenderInfo();
+    updateSenderOverview();
 
     return;
 
   }
 
 
-  // ----------------------------------------------------------
-  // Answer
-  // ----------------------------------------------------------
-
   if (
     msg.type ===
-    "answer" &&
+      "answer" &&
     mode ===
       "sender"
   ) {
@@ -1723,9 +1634,7 @@ async function handleSignal(
       );
 
 
-    // RemoteDescriptionより前に届いたICEを適用
-
-    const pending =
+    const waiting =
       pendingSenderICE.get(
         msg.receiverId
       ) ?? [];
@@ -1733,12 +1642,13 @@ async function handleSignal(
 
     for (
       const candidate
-      of pending
+      of waiting
     ) {
 
-      await pc.addIceCandidate(
-        candidate
-      );
+      await pc
+        .addIceCandidate(
+          candidate
+        );
 
     }
 
@@ -1753,46 +1663,25 @@ async function handleSignal(
   }
 
 
-  // ----------------------------------------------------------
-  // Receiver ready
-  // ----------------------------------------------------------
-
   if (
     msg.type ===
     "receiver-ready"
   ) {
 
-    if (
+    setStatus(
       msg.senderOnline
-    ) {
-
-      setStatus(
-        "送信者を発見しました。\\n接続しています..."
-      );
-
-    }
-
-    else {
-
-      setStatus(
-        "受信準備完了\\n送信者を待っています..."
-      );
-
-    }
-
+        ? "送信者を発見。接続しています..."
+        : "送信者を待っています..."
+    );
 
     return;
 
   }
 
 
-  // ----------------------------------------------------------
-  // Offer
-  // ----------------------------------------------------------
-
   if (
     msg.type ===
-    "offer" &&
+      "offer" &&
     mode ===
       "receiver"
   ) {
@@ -1850,36 +1739,27 @@ async function handleSignal(
       .onconnectionstatechange =
       () => {
 
-        const state =
-          receiverPeer
-            .connectionState;
-
-
-        console.log(
-          "Receiver:",
-          state
-        );
-
-
         if (
-          state ===
+          receiverPeer
+            .connectionState ===
           "connected"
         ) {
 
           setStatus(
-            "接続成功！\\n映像を受信しています"
+            "接続成功！\\n映像受信中"
           );
 
         }
 
 
         if (
-          state ===
+          receiverPeer
+            .connectionState ===
           "failed"
         ) {
 
           setStatus(
-            "WebRTC接続に失敗しました"
+            "WebRTC接続失敗"
           );
 
         }
@@ -1892,8 +1772,6 @@ async function handleSignal(
         msg.sdp
       );
 
-
-    // Offerより先にICEが来ていた場合
 
     for (
       const candidate
@@ -1940,16 +1818,12 @@ async function handleSignal(
   }
 
 
-  // ----------------------------------------------------------
-  // ICE
-  // ----------------------------------------------------------
-
   if (
     msg.type ===
     "ice"
   ) {
 
-    // Sender receives Receiver ICE
+    // Sender
 
     if (
       mode ===
@@ -2009,7 +1883,7 @@ async function handleSignal(
     }
 
 
-    // Receiver receives Sender ICE
+    // Receiver
 
     if (
       mode ===
@@ -2107,8 +1981,8 @@ async () => {
         track.getSettings();
 
 
-      infoBox.textContent =
-        "入力: " +
+      senderInfo.textContent =
+        "キャプチャ入力: " +
         (
           settings.width ??
           "?"
@@ -2123,8 +1997,8 @@ async () => {
           settings.frameRate ??
           "?"
         ) +
-        "fps\\n" +
-        "送信: 最大1280×720 / 30fps";
+        "FPS\\n" +
+        "送信上限: 1280×720 / 60FPS";
 
 
       track.onended =
@@ -2143,19 +2017,11 @@ async () => {
           senderPeers.clear();
 
 
-          if (
-            socket &&
-            socket.readyState ===
-              WebSocket.OPEN
-          ) {
-
-            socket.close();
-
-          }
+          socket?.close();
 
 
           setStatus(
-            "画面共有を終了しました"
+            "画面共有終了"
           );
 
         };
@@ -2175,11 +2041,6 @@ async () => {
         getRoom()
 
     });
-
-
-    setStatus(
-      "送信開始\\n受信者を待っています..."
-    );
 
   }
 
@@ -2239,11 +2100,6 @@ async () => {
 
   catch (error) {
 
-    console.error(
-      error
-    );
-
-
     setStatus(
       "受信エラー\\n" +
       error.message
@@ -2255,7 +2111,7 @@ async () => {
 
 
 // ============================================================
-// Fullscreen
+// FULLSCREEN
 // ============================================================
 
 document
@@ -2272,7 +2128,7 @@ async () => {
     ) {
 
       throw new Error(
-        "まだ映像を受信していません"
+        "まだ映像がありません"
       );
 
     }
@@ -2296,14 +2152,6 @@ async () => {
 
     }
 
-    else {
-
-      throw new Error(
-        "全画面表示に対応していません"
-      );
-
-    }
-
   }
 
   catch (error) {
@@ -2317,6 +2165,411 @@ async () => {
 
 };
 
+
+// ============================================================
+// RECEIVER STATS
+// ============================================================
+
+async function updateReceiverStats() {
+
+  if (!receiverPeer)
+    return;
+
+
+  try {
+
+    const stats =
+      await receiverPeer
+        .getStats();
+
+
+    let inbound =
+      null;
+
+
+    stats.forEach(
+      report => {
+
+        if (
+          report.type ===
+            "inbound-rtp" &&
+          (
+            report.kind ===
+              "video" ||
+            report.mediaType ===
+              "video"
+          )
+        ) {
+
+          inbound =
+            report;
+
+        }
+
+      }
+    );
+
+
+    if (!inbound)
+      return;
+
+
+    const width =
+      inbound.frameWidth ??
+      video.videoWidth ??
+      "?";
+
+
+    const height =
+      inbound.frameHeight ??
+      video.videoHeight ??
+      "?";
+
+
+    const fps =
+      inbound.framesPerSecond ??
+      "?";
+
+
+    let codecName =
+      "?";
+
+
+    if (
+      inbound.codecId
+    ) {
+
+      const codec =
+        stats.get(
+          inbound.codecId
+        );
+
+
+      if (
+        codec?.mimeType
+      ) {
+
+        codecName =
+          codec.mimeType;
+
+      }
+
+    }
+
+
+    const now =
+      performance.now();
+
+
+    const bytes =
+      inbound.bytesReceived ??
+      0;
+
+
+    let mbps =
+      null;
+
+
+    if (
+      previousReceiverTime >
+        0 &&
+      now >
+        previousReceiverTime
+    ) {
+
+      const seconds =
+        (
+          now -
+          previousReceiverTime
+        ) /
+        1000;
+
+
+      mbps =
+        (
+          (
+            bytes -
+            previousReceiverBytes
+          ) *
+          8
+        ) /
+        seconds /
+        1_000_000;
+
+    }
+
+
+    previousReceiverBytes =
+      bytes;
+
+
+    previousReceiverTime =
+      now;
+
+
+    receiverStats.textContent =
+      "実測受信\\n" +
+      width +
+      " × " +
+      height +
+      "\\n" +
+      fps +
+      " FPS\\n" +
+      (
+        mbps === null
+          ? "Bitrate: 計測中"
+          : "Bitrate: " +
+            mbps.toFixed(2) +
+            " Mbps"
+      ) +
+      "\\nCodec: " +
+      codecName;
+
+  }
+
+  catch (error) {
+
+    console.warn(
+      "Receiver stats:",
+      error
+    );
+
+  }
+
+}
+
+
+// ============================================================
+// SENDER STATS
+// ============================================================
+
+async function updateSenderStats() {
+
+  if (
+    senderPeers.size ===
+    0
+  ) {
+
+    senderStats.textContent =
+      "送信統計：接続端末なし";
+
+    return;
+
+  }
+
+
+  const lines =
+    [];
+
+
+  let index =
+    1;
+
+
+  for (
+    const [id, pc]
+    of senderPeers
+  ) {
+
+    try {
+
+      const stats =
+        await pc.getStats();
+
+
+      let outbound =
+        null;
+
+
+      stats.forEach(
+        report => {
+
+          if (
+            report.type ===
+              "outbound-rtp" &&
+            (
+              report.kind ===
+                "video" ||
+              report.mediaType ===
+                "video"
+            )
+          ) {
+
+            outbound =
+              report;
+
+          }
+
+        }
+      );
+
+
+      if (!outbound)
+        continue;
+
+
+      const now =
+        performance.now();
+
+
+      const bytes =
+        outbound.bytesSent ??
+        0;
+
+
+      const previous =
+        previousSenderStats.get(
+          id
+        );
+
+
+      let mbps =
+        null;
+
+
+      if (previous) {
+
+        const seconds =
+          (
+            now -
+            previous.time
+          ) /
+          1000;
+
+
+        if (
+          seconds >
+          0
+        ) {
+
+          mbps =
+            (
+              (
+                bytes -
+                previous.bytes
+              ) *
+              8
+            ) /
+            seconds /
+            1_000_000;
+
+        }
+
+      }
+
+
+      previousSenderStats.set(
+        id,
+        {
+          bytes,
+          time:
+            now
+        }
+      );
+
+
+      let codecName =
+        "?";
+
+
+      if (
+        outbound.codecId
+      ) {
+
+        const codec =
+          stats.get(
+            outbound.codecId
+          );
+
+
+        if (
+          codec?.mimeType
+        ) {
+
+          codecName =
+            codec.mimeType;
+
+        }
+
+      }
+
+
+      lines.push(
+        "端末 " +
+        index +
+        "\\n" +
+        (
+          outbound.frameWidth ??
+          "?"
+        ) +
+        " × " +
+        (
+          outbound.frameHeight ??
+          "?"
+        ) +
+        " / " +
+        (
+          outbound.framesPerSecond ??
+          "?"
+        ) +
+        " FPS\\n" +
+        (
+          mbps === null
+            ? "Bitrate: 計測中"
+            : "Bitrate: " +
+              mbps.toFixed(2) +
+              " Mbps"
+        ) +
+        "\\nCodec: " +
+        codecName +
+        "\\nState: " +
+        pc.connectionState
+      );
+
+
+      index++;
+
+    }
+
+    catch (error) {
+
+      console.warn(
+        "Sender stats:",
+        error
+      );
+
+    }
+
+  }
+
+
+  senderStats.textContent =
+    lines.length
+      ? "実測送信\\n\\n" +
+        lines.join(
+          "\\n\\n"
+        )
+      : "送信統計：計測中";
+
+}
+
+
+// ============================================================
+// STATS TIMER
+// ============================================================
+
+setInterval(
+  () => {
+
+    updateReceiverStats();
+
+    updateSenderStats();
+
+  },
+
+  1000
+);
+
 </script>
 
 </body>
@@ -2326,7 +2579,7 @@ async () => {
 
 
 // ============================================================
-// HTTP
+// PAGE
 // ============================================================
 
 app.get(
@@ -2341,11 +2594,15 @@ app.get(
 );
 
 
+// ============================================================
+// HEALTH
+// ============================================================
+
 app.get(
   "/health",
   (req, res) => {
 
-    let receivers =
+    let receiverCount =
       0;
 
 
@@ -2354,7 +2611,7 @@ app.get(
       of rooms.values()
     ) {
 
-      receivers +=
+      receiverCount +=
         room.receivers.size;
 
     }
@@ -2365,16 +2622,20 @@ app.get(
       ok:
         true,
 
+      version:
+        "4.0",
+
       rooms:
         rooms.size,
 
-      receivers,
+      receivers:
+        receiverCount,
 
-      websocket:
-        true,
+      signaling:
+        "WebSocket",
 
-      webrtc:
-        true
+      media:
+        "WebRTC"
 
     });
 
@@ -2383,7 +2644,7 @@ app.get(
 
 
 // ============================================================
-// Start
+// START
 // ============================================================
 
 server.listen(
@@ -2392,7 +2653,7 @@ server.listen(
   () => {
 
     console.log(
-      "WebRTC Caster listening on",
+      "WebRTC Caster v4 running on port",
       PORT
     );
 
