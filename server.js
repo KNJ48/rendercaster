@@ -1,101 +1,86 @@
 import express from "express";
+import { WebSocketServer, WebSocket } from "ws";
+import http from "node:http";
 import crypto from "node:crypto";
 
-const app = express();
+
+// ============================================================
+// Config
+// ============================================================
 
 const PORT =
   Number(process.env.PORT || 10000);
 
-const EXPIRE_MS =
-  10 * 60 * 1000;
+
+// ============================================================
+// Express
+// ============================================================
+
+const app =
+  express();
+
+
+const server =
+  http.createServer(app);
 
 
 // ============================================================
-// Middleware
+// WebSocket
 // ============================================================
 
-app.use(
-  express.json({
-    limit: "1mb"
-  })
-);
-
-app.use((req, res, next) => {
-
-  res.set(
-    "Cache-Control",
-    "no-store"
-  );
-
-  next();
-
-});
+const wss =
+  new WebSocketServer({
+    server,
+    path: "/signal"
+  });
 
 
 // ============================================================
 // Rooms
+// ============================================================
+//
+// room:
+//
+// {
+//   sender: WebSocket | null,
+//
+//   receivers:
+//     Map<receiverId, WebSocket>
+// }
+//
 // ============================================================
 
 const rooms =
   new Map();
 
 
-function validRoomId(value) {
+function getRoom(
+  id
+) {
 
-  return (
-    typeof value === "string" &&
-    /^[A-Za-z0-9_-]{1,32}$/
-      .test(value)
-  );
-
-}
+  let room =
+    rooms.get(id);
 
 
-function validReceiverId(value) {
+  if (!room) {
 
-  return (
-    typeof value === "string" &&
-    /^[A-Za-z0-9_-]{1,64}$/
-      .test(value)
-  );
+    room = {
 
-}
+      sender:
+        null,
 
+      receivers:
+        new Map()
 
-function validSignal(body) {
-
-  return (
-    body &&
-    typeof body.sessionId ===
-      "string" &&
-    body.sessionId.length >= 8 &&
-    body.sdp &&
-    typeof body.sdp.type ===
-      "string" &&
-    typeof body.sdp.sdp ===
-      "string"
-  );
-
-}
+    };
 
 
-function createRoom(roomId) {
+    rooms.set(
+      id,
+      room
+    );
 
-  const room = {
-
-    createdAt:
-      Date.now(),
-
-    receivers:
-      new Map()
-
-  };
-
-
-  rooms.set(
-    roomId,
-    room
-  );
+  }
 
 
   return room;
@@ -103,471 +88,549 @@ function createRoom(roomId) {
 }
 
 
-function getOrCreateRoom(roomId) {
+// ============================================================
+// Send JSON safely
+// ============================================================
 
-  return (
-    rooms.get(roomId) ??
-    createRoom(roomId)
-  );
+function send(
+  ws,
+  data
+) {
+
+  if (
+    ws &&
+    ws.readyState ===
+      WebSocket.OPEN
+  ) {
+
+    ws.send(
+      JSON.stringify(
+        data
+      )
+    );
+
+  }
 
 }
 
 
 // ============================================================
-// Cleanup
+// WebSocket Signaling
 // ============================================================
 
-setInterval(() => {
+wss.on(
+  "connection",
 
-  const now =
-    Date.now();
+  ws => {
 
+    let roomId =
+      null;
 
-  for (
-    const [roomId, room]
-    of rooms
-  ) {
+    let role =
+      null;
 
-    for (
-      const [receiverId, receiver]
-      of room.receivers
-    ) {
-
-      if (
-        now - receiver.updatedAt >
-        EXPIRE_MS
-      ) {
-
-        room.receivers.delete(
-          receiverId
-        );
-
-      }
-
-    }
-
-
-    if (
-      room.receivers.size === 0 &&
-      now - room.createdAt >
-        EXPIRE_MS
-    ) {
-
-      rooms.delete(
-        roomId
-      );
-
-    }
-
-  }
-
-}, 60_000);
-
-
-// ============================================================
-// Health
-// ============================================================
-
-app.get(
-  "/health",
-  (req, res) => {
-
-    res.json({
-
-      ok: true,
-
-      service:
-        "WebRTC Caster",
-
-      version:
-        "2.0",
-
-      rooms:
-        rooms.size,
-
-      time:
-        Date.now()
-
-    });
-
-  }
-);
-
-
-// ============================================================
-// Receiver Join
-// ============================================================
-
-app.post(
-  "/api/room/:room/receiver",
-  (req, res) => {
-
-    const roomId =
-      req.params.room;
-
-
-    if (
-      !validRoomId(roomId)
-    ) {
-
-      return res
-        .status(400)
-        .json({
-          error:
-            "Invalid room"
-        });
-
-    }
-
-
-    const room =
-      getOrCreateRoom(
-        roomId
-      );
-
-
-    const receiverId =
-      crypto.randomUUID();
-
-
-    room.receivers.set(
-      receiverId,
-      {
-
-        createdAt:
-          Date.now(),
-
-        updatedAt:
-          Date.now(),
-
-        offer:
-          null,
-
-        answer:
-          null
-
-      }
-    );
-
-
-    res.json({
-
-      ok: true,
-
-      room:
-        roomId,
-
-      receiverId
-
-    });
-
-  }
-);
-
-
-// ============================================================
-// Receiver List
-// ============================================================
-
-app.get(
-  "/api/room/:room/receivers",
-  (req, res) => {
-
-    const room =
-      rooms.get(
-        req.params.room
-      );
-
-
-    if (!room) {
-
-      return res.json({
-        receivers: []
-      });
-
-    }
-
-
-    res.json({
-
-      receivers:
-        [
-          ...room.receivers.keys()
-        ]
-
-    });
-
-  }
-);
-
-
-// ============================================================
-// Offer POST
-// ============================================================
-
-app.post(
-  "/api/room/:room/peer/:receiver/offer",
-  (req, res) => {
-
-    const roomId =
-      req.params.room;
-
-    const receiverId =
-      req.params.receiver;
-
-
-    if (
-      !validRoomId(roomId) ||
-      !validReceiverId(receiverId)
-    ) {
-
-      return res
-        .status(400)
-        .json({
-          error:
-            "Invalid ID"
-        });
-
-    }
-
-
-    if (
-      !validSignal(req.body)
-    ) {
-
-      return res
-        .status(400)
-        .json({
-          error:
-            "Invalid signal"
-        });
-
-    }
-
-
-    const room =
-      rooms.get(roomId);
-
-
-    const receiver =
-      room?.receivers.get(
-        receiverId
-      );
-
-
-    if (!receiver) {
-
-      return res
-        .status(404)
-        .json({
-          error:
-            "Receiver not found"
-        });
-
-    }
-
-
-    receiver.updatedAt =
-      Date.now();
-
-
-    receiver.offer = {
-
-      sessionId:
-        req.body.sessionId,
-
-      createdAt:
-        Date.now(),
-
-      sdp:
-        req.body.sdp
-
-    };
-
-
-    receiver.answer =
+    let receiverId =
       null;
 
 
-    res.json({
-      ok: true
-    });
+    // --------------------------------------------------------
+    // Message
+    // --------------------------------------------------------
 
-  }
-);
+    ws.on(
+      "message",
 
+      raw => {
 
-// ============================================================
-// Offer GET
-// ============================================================
+        try {
 
-app.get(
-  "/api/room/:room/peer/:receiver/offer",
-  (req, res) => {
-
-    const room =
-      rooms.get(
-        req.params.room
-      );
+          const msg =
+            JSON.parse(
+              raw.toString()
+            );
 
 
-    const receiver =
-      room?.receivers.get(
-        req.params.receiver
-      );
+          // ==================================================
+          // Sender joins
+          // ==================================================
+
+          if (
+            msg.type ===
+            "sender-join"
+          ) {
+
+            roomId =
+              String(
+                msg.room || ""
+              );
 
 
-    if (
-      !receiver?.offer
-    ) {
+            if (
+              !/^[A-Za-z0-9_-]{1,32}$/
+                .test(roomId)
+            ) {
 
-      return res
-        .status(404)
-        .json({
-          error:
-            "Offer not found"
-        });
+              send(
+                ws,
+                {
+                  type:
+                    "error",
 
-    }
+                  message:
+                    "Invalid room"
+                }
+              );
+
+              return;
+
+            }
 
 
-    res.json(
-      receiver.offer
+            role =
+              "sender";
+
+
+            const room =
+              getRoom(
+                roomId
+              );
+
+
+            // 既存Senderがいるなら切断
+            if (
+              room.sender &&
+              room.sender !== ws
+            ) {
+
+              send(
+                room.sender,
+                {
+                  type:
+                    "replaced"
+                }
+              );
+
+
+              room.sender.close();
+
+            }
+
+
+            room.sender =
+              ws;
+
+
+            send(
+              ws,
+              {
+                type:
+                  "sender-ready"
+              }
+            );
+
+
+            // 先にReceiverが待っていた場合
+            for (
+              const id
+              of room.receivers.keys()
+            ) {
+
+              send(
+                ws,
+                {
+                  type:
+                    "receiver-joined",
+
+                  receiverId:
+                    id
+                }
+              );
+
+            }
+
+
+            return;
+
+          }
+
+
+          // ==================================================
+          // Receiver joins
+          // ==================================================
+
+          if (
+            msg.type ===
+            "receiver-join"
+          ) {
+
+            roomId =
+              String(
+                msg.room || ""
+              );
+
+
+            if (
+              !/^[A-Za-z0-9_-]{1,32}$/
+                .test(roomId)
+            ) {
+
+              send(
+                ws,
+                {
+                  type:
+                    "error",
+
+                  message:
+                    "Invalid room"
+                }
+              );
+
+              return;
+
+            }
+
+
+            role =
+              "receiver";
+
+
+            receiverId =
+              crypto.randomUUID();
+
+
+            const room =
+              getRoom(
+                roomId
+              );
+
+
+            room.receivers.set(
+              receiverId,
+              ws
+            );
+
+
+            send(
+              ws,
+              {
+                type:
+                  "receiver-ready",
+
+                receiverId,
+
+                senderOnline:
+                  Boolean(
+                    room.sender
+                  )
+              }
+            );
+
+
+            // Senderに通知
+            send(
+              room.sender,
+              {
+                type:
+                  "receiver-joined",
+
+                receiverId
+              }
+            );
+
+
+            return;
+
+          }
+
+
+          // ==================================================
+          // Offer
+          // Sender -> Receiver
+          // ==================================================
+
+          if (
+            msg.type ===
+            "offer"
+          ) {
+
+            if (
+              role !==
+              "sender"
+            ) {
+
+              return;
+
+            }
+
+
+            const room =
+              rooms.get(
+                roomId
+              );
+
+
+            const target =
+              room?.receivers.get(
+                msg.receiverId
+              );
+
+
+            send(
+              target,
+              {
+                type:
+                  "offer",
+
+                receiverId:
+                  msg.receiverId,
+
+                sdp:
+                  msg.sdp
+              }
+            );
+
+
+            return;
+
+          }
+
+
+          // ==================================================
+          // Answer
+          // Receiver -> Sender
+          // ==================================================
+
+          if (
+            msg.type ===
+            "answer"
+          ) {
+
+            if (
+              role !==
+              "receiver"
+            ) {
+
+              return;
+
+            }
+
+
+            const room =
+              rooms.get(
+                roomId
+              );
+
+
+            send(
+              room?.sender,
+              {
+                type:
+                  "answer",
+
+                receiverId,
+
+                sdp:
+                  msg.sdp
+              }
+            );
+
+
+            return;
+
+          }
+
+
+          // ==================================================
+          // ICE
+          // ==================================================
+
+          if (
+            msg.type ===
+            "ice"
+          ) {
+
+            const room =
+              rooms.get(
+                roomId
+              );
+
+
+            // Sender -> Receiver
+
+            if (
+              role ===
+              "sender"
+            ) {
+
+              const target =
+                room?.receivers.get(
+                  msg.receiverId
+                );
+
+
+              send(
+                target,
+                {
+                  type:
+                    "ice",
+
+                  receiverId:
+                    msg.receiverId,
+
+                  candidate:
+                    msg.candidate
+                }
+              );
+
+            }
+
+
+            // Receiver -> Sender
+
+            else if (
+              role ===
+              "receiver"
+            ) {
+
+              send(
+                room?.sender,
+                {
+                  type:
+                    "ice",
+
+                  receiverId,
+
+                  candidate:
+                    msg.candidate
+                }
+              );
+
+            }
+
+
+            return;
+
+          }
+
+        }
+
+        catch (error) {
+
+          console.error(
+            "WS message error:",
+            error
+          );
+
+        }
+
+      }
+
+    );
+
+
+    // --------------------------------------------------------
+    // Close
+    // --------------------------------------------------------
+
+    ws.on(
+      "close",
+
+      () => {
+
+        if (!roomId)
+          return;
+
+
+        const room =
+          rooms.get(
+            roomId
+          );
+
+
+        if (!room)
+          return;
+
+
+        // Sender left
+
+        if (
+          role ===
+          "sender"
+        ) {
+
+          if (
+            room.sender ===
+            ws
+          ) {
+
+            room.sender =
+              null;
+
+          }
+
+
+          for (
+            const receiver
+            of room.receivers.values()
+          ) {
+
+            send(
+              receiver,
+              {
+                type:
+                  "sender-left"
+              }
+            );
+
+          }
+
+        }
+
+
+        // Receiver left
+
+        if (
+          role ===
+            "receiver" &&
+          receiverId
+        ) {
+
+          room.receivers.delete(
+            receiverId
+          );
+
+
+          send(
+            room.sender,
+            {
+              type:
+                "receiver-left",
+
+              receiverId
+            }
+          );
+
+        }
+
+
+        if (
+          !room.sender &&
+          room.receivers.size ===
+            0
+        ) {
+
+          rooms.delete(
+            roomId
+          );
+
+        }
+
+      }
+
     );
 
   }
-);
 
-
-// ============================================================
-// Answer POST
-// ============================================================
-
-app.post(
-  "/api/room/:room/peer/:receiver/answer",
-  (req, res) => {
-
-    const room =
-      rooms.get(
-        req.params.room
-      );
-
-
-    const receiver =
-      room?.receivers.get(
-        req.params.receiver
-      );
-
-
-    if (
-      !receiver?.offer
-    ) {
-
-      return res
-        .status(404)
-        .json({
-          error:
-            "Offer not found"
-        });
-
-    }
-
-
-    if (
-      !validSignal(req.body)
-    ) {
-
-      return res
-        .status(400)
-        .json({
-          error:
-            "Invalid signal"
-        });
-
-    }
-
-
-    if (
-      receiver.offer
-        .sessionId !==
-      req.body.sessionId
-    ) {
-
-      return res
-        .status(409)
-        .json({
-          error:
-            "Session mismatch"
-        });
-
-    }
-
-
-    receiver.updatedAt =
-      Date.now();
-
-
-    receiver.answer = {
-
-      sessionId:
-        req.body.sessionId,
-
-      createdAt:
-        Date.now(),
-
-      sdp:
-        req.body.sdp
-
-    };
-
-
-    res.json({
-      ok: true
-    });
-
-  }
-);
-
-
-// ============================================================
-// Answer GET
-// ============================================================
-
-app.get(
-  "/api/room/:room/peer/:receiver/answer",
-  (req, res) => {
-
-    const room =
-      rooms.get(
-        req.params.room
-      );
-
-
-    const receiver =
-      room?.receivers.get(
-        req.params.receiver
-      );
-
-
-    if (
-      !receiver?.answer
-    ) {
-
-      return res
-        .status(404)
-        .json({
-          error:
-            "Answer not found"
-        });
-
-    }
-
-
-    res.json(
-      receiver.answer
-    );
-
-  }
 );
 
 
@@ -597,8 +660,7 @@ WebRTC Caster
 <style>
 
 * {
-  box-sizing:
-    border-box;
+  box-sizing: border-box;
 }
 
 
@@ -609,10 +671,11 @@ body {
 
   min-height: 100%;
 
-  color: #eee;
-
   background:
     #101114;
+
+  color:
+    #eee;
 
   font-family:
     system-ui,
@@ -683,21 +746,21 @@ button {
     6px 3px;
 
   padding:
-    12px 18px;
+    13px 20px;
 
-  border: 0;
+  border:
+    none;
 
   border-radius:
     8px;
 
-  font-size:
-    16px;
-
-  color:
-    white;
+  color: white;
 
   background:
     #2868d8;
+
+  font-size:
+    17px;
 
   cursor:
     pointer;
@@ -706,41 +769,39 @@ button {
 
 
 button:hover {
-
   filter:
-    brightness(1.15);
-
+    brightness(1.12);
 }
 
 
-#senderConnect {
-
+#sendButton {
   background:
     #16834b;
+}
 
+
+#receiveButton {
+  background:
+    #2868d8;
 }
 
 
 #fullscreen {
-
   background:
     #7544c7;
-
 }
 
 
 #status {
 
-  min-height: 60px;
+  min-height:
+    60px;
 
   margin:
-    15px 0;
+    16px 0;
 
   padding:
     15px;
-
-  white-space:
-    pre-wrap;
 
   color:
     #90d8ff;
@@ -751,22 +812,22 @@ button:hover {
   border-radius:
     8px;
 
+  white-space:
+    pre-wrap;
+
   font-family:
     monospace;
 
 }
 
 
-.info {
+#info {
 
   margin-top:
     12px;
 
   padding:
     10px;
-
-  white-space:
-    pre-wrap;
 
   color:
     #aaa;
@@ -777,22 +838,23 @@ button:hover {
   border-radius:
     8px;
 
-  font-family:
-    monospace;
+  white-space:
+    pre-wrap;
 
   font-size:
     13px;
+
+  font-family:
+    monospace;
 
 }
 
 
 video {
 
-  display:
-    block;
+  display: block;
 
-  width:
-    100%;
+  width: 100%;
 
   max-height:
     75vh;
@@ -829,11 +891,11 @@ video:fullscreen {
   margin:
     0;
 
-  background:
-    black;
-
   border-radius:
     0;
+
+  background:
+    black;
 
   object-fit:
     contain;
@@ -874,7 +936,7 @@ WebRTC Caster
 <section>
 
 <h2>
-ルーム
+ルームID
 </h2>
 
 
@@ -882,6 +944,7 @@ WebRTC Caster
   id="room"
   value="1111"
   maxlength="32"
+  autocomplete="off"
 >
 
 </section>
@@ -890,36 +953,24 @@ WebRTC Caster
 <section>
 
 <h2>
-送信
+送信する
 </h2>
 
 
-<button id="senderStart">
-① 画面共有を開始
-</button>
-
-
-<button id="senderConnect">
-③ 受信者を確認・接続
+<button id="sendButton">
+🖥 画面を送信
 </button>
 
 
 <p class="small">
-
-受信側で②
-→ 送信側で③
-→ 受信側で④
-→ 送信側でもう一度③
-
+押した後、共有する画面を選択してください。
+受信者は自動的に接続されます。
 </p>
 
 
-<div
-  id="captureInfo"
-  class="info">
-未キャプチャ
+<div id="info">
+未送信
 </div>
-
 
 </section>
 
@@ -927,23 +978,23 @@ WebRTC Caster
 <section>
 
 <h2>
-受信
+受信する
 </h2>
 
 
-<button id="receiverJoin">
-② 受信準備
-</button>
-
-
-<button id="receiverConnect">
-④ 映像に接続
+<button id="receiveButton">
+📺 画面を受信
 </button>
 
 
 <button id="fullscreen">
 ⛶ 全画面表示
 </button>
+
+
+<p class="small">
+同じルームIDの送信者へ自動接続します。
+</p>
 
 
 <video
@@ -965,20 +1016,37 @@ WebRTC Caster
 // State
 // ============================================================
 
-const senderPeers =
-  new Map();
-
-
-let stream =
+let socket =
   null;
 
 
-let receiverId =
+let mode =
+  null;
+
+
+let localStream =
   null;
 
 
 let receiverPeer =
   null;
+
+
+// Sender:
+// receiverId -> RTCPeerConnection
+
+const senderPeers =
+  new Map();
+
+
+// ICEがRemoteDescriptionより先に来た場合の待機場所
+
+const pendingSenderICE =
+  new Map();
+
+
+let pendingReceiverICE =
+  [];
 
 
 const statusBox =
@@ -987,9 +1055,9 @@ const statusBox =
   );
 
 
-const captureInfo =
+const infoBox =
   document.getElementById(
-    "captureInfo"
+    "info"
   );
 
 
@@ -1000,10 +1068,12 @@ const video =
 
 
 // ============================================================
-// Helpers
+// UI
 // ============================================================
 
-function status(text) {
+function setStatus(
+  text
+) {
 
   console.log(text);
 
@@ -1015,16 +1085,18 @@ function status(text) {
 
 function getRoom() {
 
-  const value =
+  const room =
     document
-      .getElementById("room")
+      .getElementById(
+        "room"
+      )
       .value
       .trim();
 
 
   if (
     !/^[A-Za-z0-9_-]{1,32}$/
-      .test(value)
+      .test(room)
   ) {
 
     throw new Error(
@@ -1034,175 +1106,116 @@ function getRoom() {
   }
 
 
-  return value;
+  return room;
 
 }
 
 
 // ============================================================
-// HTTP
+// WebSocket
 // ============================================================
 
-async function request(
-  url,
-  options = {}
-) {
-
-  const controller =
-    new AbortController();
-
-
-  const timer =
-    setTimeout(
-      () =>
-        controller.abort(),
-      15000
-    );
-
-
-  try {
-
-    const response =
-      await fetch(
-        url,
-        {
-          ...options,
-
-          cache:
-            "no-store",
-
-          signal:
-            controller.signal
-        }
-      );
-
-
-    const data =
-      await response.json();
-
-
-    if (
-      !response.ok
-    ) {
-
-      throw new Error(
-        data.error ??
-        "HTTP Error"
-      );
-
-    }
-
-
-    return data;
-
-  }
-
-  catch (error) {
-
-    if (
-      error.name ===
-      "AbortError"
-    ) {
-
-      throw new Error(
-        "HTTP通信がタイムアウトしました"
-      );
-
-    }
-
-
-    throw error;
-
-  }
-
-  finally {
-
-    clearTimeout(
-      timer
-    );
-
-  }
-
-}
-
-
-// ============================================================
-// ICE
-// ============================================================
-
-function waitICE(
-  pc,
-  timeout = 10000
-) {
-
-  if (
-    pc.iceGatheringState ===
-    "complete"
-  ) {
-
-    return Promise.resolve();
-
-  }
-
+function connectSocket() {
 
   return new Promise(
-    resolve => {
+    (resolve, reject) => {
 
-      let done =
-        false;
-
-
-      function finish() {
-
-        if (done)
-          return;
-
-
-        done =
-          true;
-
-
-        clearTimeout(
-          timer
-        );
-
-
-        pc.removeEventListener(
-          "icegatheringstatechange",
-          changed
-        );
-
+      if (
+        socket &&
+        socket.readyState ===
+          WebSocket.OPEN
+      ) {
 
         resolve();
 
-      }
-
-
-      function changed() {
-
-        if (
-          pc.iceGatheringState ===
-          "complete"
-        ) {
-
-          finish();
-
-        }
+        return;
 
       }
 
 
-      pc.addEventListener(
-        "icegatheringstatechange",
-        changed
-      );
+      const protocol =
+        location.protocol ===
+          "https:"
+          ? "wss:"
+          : "ws:";
 
 
-      const timer =
-        setTimeout(
-          finish,
-          timeout
+      socket =
+        new WebSocket(
+          protocol +
+          "//" +
+          location.host +
+          "/signal"
         );
+
+
+      socket.onopen =
+        () => {
+
+          console.log(
+            "WebSocket connected"
+          );
+
+          resolve();
+
+        };
+
+
+      socket.onerror =
+        () => {
+
+          reject(
+            new Error(
+              "シグナリングサーバーへ接続できません"
+            )
+          );
+
+        };
+
+
+      socket.onmessage =
+        async event => {
+
+          try {
+
+            const msg =
+              JSON.parse(
+                event.data
+              );
+
+
+            await handleSignal(
+              msg
+            );
+
+          }
+
+          catch (error) {
+
+            console.error(
+              "Signal error:",
+              error
+            );
+
+
+            setStatus(
+              "シグナリングエラー\\n" +
+              error.message
+            );
+
+          }
+
+        };
+
+
+      socket.onclose =
+        () => {
+
+          console.log(
+            "WebSocket closed"
+          );
+
+        };
 
     }
   );
@@ -1210,8 +1223,34 @@ function waitICE(
 }
 
 
+function signal(
+  data
+) {
+
+  if (
+    !socket ||
+    socket.readyState !==
+      WebSocket.OPEN
+  ) {
+
+    throw new Error(
+      "WebSocketが接続されていません"
+    );
+
+  }
+
+
+  socket.send(
+    JSON.stringify(
+      data
+    )
+  );
+
+}
+
+
 // ============================================================
-// PeerConnection
+// Peer
 // ============================================================
 
 function createPeer() {
@@ -1247,45 +1286,34 @@ function createPeer() {
     };
 
 
-  pc.oniceconnectionstatechange =
-    () => {
-
-      console.log(
-        "ICE:",
-        pc.iceConnectionState
-      );
-
-    };
-
-
   return pc;
 
 }
 
 
 // ============================================================
-// Video sender setup
+// 720p / 20Mbps / resolution priority
 // ============================================================
 
 async function addVideoTrack(
   pc,
   track,
-  sourceStream
+  stream
 ) {
 
   const sender =
     pc.addTrack(
       track,
-      sourceStream
+      stream
     );
 
 
   if (
     track.kind !==
-    "video"
+      "video"
   ) {
 
-    return sender;
+    return;
 
   }
 
@@ -1304,604 +1332,470 @@ async function addVideoTrack(
     720;
 
 
-  // ==========================================================
-  // 最大720p
-  //
-  // 1920x1080 -> 1.5
-  // 2560x1440 -> 2
-  // 3840x2160 -> 3
-  //
-  // 720p未満は拡大しない
-  // ==========================================================
-
   const scale =
     Math.max(
       1,
-      width / 1280,
-      height / 720
+
+      width /
+        1280,
+
+      height /
+        720
     );
 
 
   try {
 
-    const parameters =
+    const params =
       sender.getParameters();
 
 
     if (
-      !parameters.encodings ||
-      parameters.encodings.length ===
+      !params.encodings ||
+      params.encodings.length ===
         0
     ) {
 
-      parameters.encodings =
+      params.encodings =
         [{}];
 
     }
 
 
-    // 最大720p
-
-    parameters
+    params
       .encodings[0]
       .scaleResolutionDownBy =
         scale;
 
 
-    // 最大30fps
-
-    parameters
+    params
       .encodings[0]
       .maxFramerate =
         30;
 
 
-    // 最大20Mbps
-
-    parameters
+    params
       .encodings[0]
       .maxBitrate =
         20_000_000;
 
 
-    // --------------------------------------------------------
-    // 回線が苦しい場合：
-    //
-    // 解像度を落とすより
-    // フレームレートを先に犠牲にしてほしい
-    // --------------------------------------------------------
-
-    parameters
+    params
       .degradationPreference =
         "maintain-resolution";
 
 
     await sender
       .setParameters(
-        parameters
+        params
       );
-
-
-    console.log(
-      "Video sender:",
-      {
-        source:
-          width +
-          "x" +
-          height,
-
-        scale,
-
-        maxBitrate:
-          20_000_000,
-
-        maxFramerate:
-          30,
-
-        degradationPreference:
-          "maintain-resolution"
-      }
-    );
 
   }
 
   catch (error) {
 
     console.warn(
-      "送信パラメータの適用に失敗:",
+      "Video parameter warning:",
       error
     );
 
   }
-
-
-  return sender;
 
 }
 
 
 // ============================================================
-// ① Sender Start
+// Sender creates peer automatically
 // ============================================================
 
-document
-.getElementById(
-  "senderStart"
-)
-.onclick =
-async () => {
+async function createSenderPeer(
+  receiverId
+) {
 
-  try {
+  if (
+    senderPeers.has(
+      receiverId
+    )
+  ) {
 
-    status(
-      "共有する画面を選択してください..."
-    );
+    return;
+
+  }
 
 
-    stream =
-      await navigator
-        .mediaDevices
-        .getDisplayMedia({
+  if (!localStream) {
 
-          video: {
+    return;
 
-            frameRate: {
-              ideal: 30,
-              max: 30
-            }
+  }
 
-          },
 
-          audio:
-            false
+  const pc =
+    createPeer();
+
+
+  senderPeers.set(
+    receiverId,
+    pc
+  );
+
+
+  // ----------------------------------------------------------
+  // ICE
+  // ----------------------------------------------------------
+
+  pc.onicecandidate =
+    event => {
+
+      if (
+        event.candidate
+      ) {
+
+        signal({
+
+          type:
+            "ice",
+
+          receiverId,
+
+          candidate:
+            event.candidate
 
         });
 
+      }
 
-    const track =
-      stream
-        .getVideoTracks()[0];
+    };
 
 
-    if (track) {
+  pc.onconnectionstatechange =
+    () => {
 
-      // --------------------------------------------------------
-      // 文字・細部を優先
-      // --------------------------------------------------------
+      console.log(
+        receiverId,
+        pc.connectionState
+      );
 
-      try {
 
-        track.contentHint =
-          "detail";
+      updateSenderInfo();
+
+
+      if (
+        pc.connectionState ===
+          "failed" ||
+        pc.connectionState ===
+          "closed"
+      ) {
+
+        pc.close();
+
+        senderPeers.delete(
+          receiverId
+        );
+
+
+        updateSenderInfo();
 
       }
 
-      catch {}
+    };
 
 
-      const settings =
-        track.getSettings();
+  // ----------------------------------------------------------
+  // Track
+  // ----------------------------------------------------------
+
+  for (
+    const track
+    of localStream.getTracks()
+  ) {
+
+    await addVideoTrack(
+      pc,
+      track,
+      localStream
+    );
+
+  }
 
 
-      captureInfo.textContent =
-        "入力映像: " +
-        (
-          settings.width ??
-          "?"
-        ) +
-        "×" +
-        (
-          settings.height ??
-          "?"
-        ) +
-        "\\n入力FPS: " +
-        (
-          settings.frameRate ??
-          "?"
-        ) +
-        "\\n送信解像度: 最大1280×720" +
-        "\\n送信FPS: 最大30" +
-        "\\n帯域上限: 20 Mbps / 受信者" +
-        "\\n品質方針: 解像度優先";
+  // ----------------------------------------------------------
+  // Offer
+  // ----------------------------------------------------------
+
+  const offer =
+    await pc.createOffer();
 
 
-      track.onended =
-        () => {
-
-          for (
-            const info
-            of senderPeers.values()
-          ) {
-
-            info.pc.close();
-
-          }
+  await pc
+    .setLocalDescription(
+      offer
+    );
 
 
-          senderPeers.clear();
+  signal({
+
+    type:
+      "offer",
+
+    receiverId,
+
+    sdp:
+      pc.localDescription
+
+  });
 
 
-          status(
-            "画面共有を終了しました"
-          );
+  updateSenderInfo();
 
-        };
+}
+
+
+// ============================================================
+// Sender info
+// ============================================================
+
+function updateSenderInfo() {
+
+  let connected =
+    0;
+
+
+  for (
+    const pc
+    of senderPeers.values()
+  ) {
+
+    if (
+      pc.connectionState ===
+      "connected"
+    ) {
+
+      connected++;
+
+    }
+
+  }
+
+
+  infoBox.textContent =
+    "接続中: " +
+    connected +
+    "台\\n" +
+    "接続処理中を含む: " +
+    senderPeers.size +
+    "台\\n" +
+    "最大映像: 1280×720 / 30fps\\n" +
+    "帯域上限: 20Mbps / 受信者\\n" +
+    "品質方針: 解像度優先";
+
+}
+
+
+// ============================================================
+// Handle signaling
+// ============================================================
+
+async function handleSignal(
+  msg
+) {
+
+  // ----------------------------------------------------------
+  // Error
+  // ----------------------------------------------------------
+
+  if (
+    msg.type ===
+    "error"
+  ) {
+
+    throw new Error(
+      msg.message
+    );
+
+  }
+
+
+  // ----------------------------------------------------------
+  // Sender ready
+  // ----------------------------------------------------------
+
+  if (
+    msg.type ===
+    "sender-ready"
+  ) {
+
+    setStatus(
+      "送信準備完了\\n受信者を待っています..."
+    );
+
+    return;
+
+  }
+
+
+  // ----------------------------------------------------------
+  // Receiver joined
+  // ----------------------------------------------------------
+
+  if (
+    msg.type ===
+    "receiver-joined" &&
+    mode ===
+      "sender"
+  ) {
+
+    console.log(
+      "Receiver joined:",
+      msg.receiverId
+    );
+
+
+    await createSenderPeer(
+      msg.receiverId
+    );
+
+
+    return;
+
+  }
+
+
+  // ----------------------------------------------------------
+  // Receiver left
+  // ----------------------------------------------------------
+
+  if (
+    msg.type ===
+    "receiver-left" &&
+    mode ===
+      "sender"
+  ) {
+
+    const pc =
+      senderPeers.get(
+        msg.receiverId
+      );
+
+
+    if (pc) {
+
+      pc.close();
+
+      senderPeers.delete(
+        msg.receiverId
+      );
 
     }
 
 
-    status(
-      "① 完了\\n" +
-      "受信者に②を押してもらってください。"
-    );
+    updateSenderInfo();
+
+    return;
 
   }
 
-  catch (error) {
 
-    console.error(
-      error
-    );
+  // ----------------------------------------------------------
+  // Answer
+  // ----------------------------------------------------------
 
+  if (
+    msg.type ===
+    "answer" &&
+    mode ===
+      "sender"
+  ) {
 
-    status(
-      "画面共有エラー\\n" +
-      error.message
-    );
-
-  }
-
-};
-
-
-// ============================================================
-// ② Receiver Join
-// ============================================================
-
-document
-.getElementById(
-  "receiverJoin"
-)
-.onclick =
-async () => {
-
-  try {
-
-    const result =
-      await request(
-
-        "/api/room/" +
-        encodeURIComponent(
-          getRoom()
-        ) +
-        "/receiver",
-
-        {
-          method:
-            "POST"
-        }
-
+    const pc =
+      senderPeers.get(
+        msg.receiverId
       );
 
 
-    receiverId =
-      result.receiverId;
+    if (!pc)
+      return;
 
 
-    status(
-      "② 完了\\n" +
-      "受信準備ができました。\\n" +
-      "送信側で③を押してください。"
-    );
-
-  }
-
-  catch (error) {
-
-    console.error(
-      error
-    );
-
-
-    status(
-      "受信準備エラー\\n" +
-      error.message
-    );
-
-  }
-
-};
-
-
-// ============================================================
-// ③ Sender Connect
-// ============================================================
-
-document
-.getElementById(
-  "senderConnect"
-)
-.onclick =
-async () => {
-
-  try {
-
-    if (!stream) {
-
-      throw new Error(
-        "先に①を実行してください"
-      );
-
-    }
-
-
-    const room =
-      getRoom();
-
-
-    const data =
-      await request(
-
-        "/api/room/" +
-        encodeURIComponent(
-          room
-        ) +
-        "/receivers"
-
+    await pc
+      .setRemoteDescription(
+        msg.sdp
       );
 
 
-    let newPeers =
-      0;
+    // RemoteDescriptionより前に届いたICEを適用
 
-
-    let answers =
-      0;
+    const pending =
+      pendingSenderICE.get(
+        msg.receiverId
+      ) ?? [];
 
 
     for (
-      const id
-      of data.receivers
+      const candidate
+      of pending
     ) {
 
-      // ======================================================
-      // Existing peer
-      // ======================================================
-
-      if (
-        senderPeers.has(id)
-      ) {
-
-        const info =
-          senderPeers.get(id);
-
-
-        if (
-          !info.pc.remoteDescription
-        ) {
-
-          try {
-
-            const answer =
-              await request(
-
-                "/api/room/" +
-                encodeURIComponent(
-                  room
-                ) +
-                "/peer/" +
-                encodeURIComponent(
-                  id
-                ) +
-                "/answer"
-
-              );
-
-
-            if (
-              answer.sessionId ===
-              info.sessionId
-            ) {
-
-              await info.pc
-                .setRemoteDescription(
-                  answer.sdp
-                );
-
-
-              answers++;
-
-            }
-
-          }
-
-          catch {
-
-            // Answer未作成なら無視
-
-          }
-
-        }
-
-
-        continue;
-
-      }
-
-
-      // ======================================================
-      // New peer
-      // ======================================================
-
-      const pc =
-        createPeer();
-
-
-      for (
-        const track
-        of stream.getTracks()
-      ) {
-
-        await addVideoTrack(
-          pc,
-          track,
-          stream
-        );
-
-      }
-
-
-      const offer =
-        await pc
-          .createOffer();
-
-
-      await pc
-        .setLocalDescription(
-          offer
-        );
-
-
-      await waitICE(
-        pc
-      );
-
-
-      const sessionId =
-        crypto.randomUUID();
-
-
-      senderPeers.set(
-        id,
-        {
-          pc,
-          sessionId
-        }
-      );
-
-
-      await request(
-
-        "/api/room/" +
-        encodeURIComponent(
-          room
-        ) +
-        "/peer/" +
-        encodeURIComponent(
-          id
-        ) +
-        "/offer",
-
-        {
-
-          method:
-            "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json"
-          },
-
-          body:
-            JSON.stringify({
-
-              sessionId,
-
-              sdp:
-                pc.localDescription
-
-            })
-
-        }
-
-      );
-
-
-      newPeers++;
-
-    }
-
-
-    status(
-      "③ 処理完了\\n\\n" +
-      "受信者: " +
-      data.receivers.length +
-      "人\\n" +
-      "新規Offer: " +
-      newPeers +
-      "\\n" +
-      "Answer適用: " +
-      answers +
-      "\\n\\n" +
-      "新規受信者は④を押してください。\\n" +
-      "その後、送信側で③をもう一度押します。"
-    );
-
-  }
-
-  catch (error) {
-
-    console.error(
-      error
-    );
-
-
-    status(
-      "送信接続エラー\\n" +
-      error.message
-    );
-
-  }
-
-};
-
-
-// ============================================================
-// ④ Receiver Connect
-// ============================================================
-
-document
-.getElementById(
-  "receiverConnect"
-)
-.onclick =
-async () => {
-
-  try {
-
-    if (!receiverId) {
-
-      throw new Error(
-        "先に②を実行してください"
+      await pc.addIceCandidate(
+        candidate
       );
 
     }
 
 
-    const room =
-      getRoom();
-
-
-    status(
-      "Offerを取得しています..."
+    pendingSenderICE.delete(
+      msg.receiverId
     );
 
 
-    const offer =
-      await request(
+    return;
 
-        "/api/room/" +
-        encodeURIComponent(
-          room
-        ) +
-        "/peer/" +
-        encodeURIComponent(
-          receiverId
-        ) +
-        "/offer"
+  }
 
+
+  // ----------------------------------------------------------
+  // Receiver ready
+  // ----------------------------------------------------------
+
+  if (
+    msg.type ===
+    "receiver-ready"
+  ) {
+
+    if (
+      msg.senderOnline
+    ) {
+
+      setStatus(
+        "送信者を発見しました。\\n接続しています..."
       );
 
+    }
+
+    else {
+
+      setStatus(
+        "受信準備完了\\n送信者を待っています..."
+      );
+
+    }
+
+
+    return;
+
+  }
+
+
+  // ----------------------------------------------------------
+  // Offer
+  // ----------------------------------------------------------
+
+  if (
+    msg.type ===
+    "offer" &&
+    mode ===
+      "receiver"
+  ) {
 
     receiverPeer =
       createPeer();
@@ -1930,6 +1824,28 @@ async () => {
       };
 
 
+    receiverPeer.onicecandidate =
+      event => {
+
+        if (
+          event.candidate
+        ) {
+
+          signal({
+
+            type:
+              "ice",
+
+            candidate:
+              event.candidate
+
+          });
+
+        }
+
+      };
+
+
     receiverPeer
       .onconnectionstatechange =
       () => {
@@ -1950,9 +1866,8 @@ async () => {
           "connected"
         ) {
 
-          status(
-            "接続成功！\\n" +
-            "解像度優先モードで受信中"
+          setStatus(
+            "接続成功！\\n映像を受信しています"
           );
 
         }
@@ -1963,7 +1878,7 @@ async () => {
           "failed"
         ) {
 
-          status(
+          setStatus(
             "WebRTC接続に失敗しました"
           );
 
@@ -1974,8 +1889,27 @@ async () => {
 
     await receiverPeer
       .setRemoteDescription(
-        offer.sdp
+        msg.sdp
       );
+
+
+    // Offerより先にICEが来ていた場合
+
+    for (
+      const candidate
+      of pendingReceiverICE
+    ) {
+
+      await receiverPeer
+        .addIceCandidate(
+          candidate
+        );
+
+    }
+
+
+    pendingReceiverICE =
+      [];
 
 
     const answer =
@@ -1989,53 +1923,262 @@ async () => {
       );
 
 
-    await waitICE(
-      receiverPeer
-    );
+    signal({
+
+      type:
+        "answer",
+
+      sdp:
+        receiverPeer
+          .localDescription
+
+    });
 
 
-    await request(
+    return;
 
-      "/api/room/" +
-      encodeURIComponent(
-        room
-      ) +
-      "/peer/" +
-      encodeURIComponent(
-        receiverId
-      ) +
-      "/answer",
+  }
 
-      {
 
-        method:
-          "POST",
+  // ----------------------------------------------------------
+  // ICE
+  // ----------------------------------------------------------
 
-        headers: {
-          "Content-Type":
-            "application/json"
-        },
+  if (
+    msg.type ===
+    "ice"
+  ) {
 
-        body:
-          JSON.stringify({
+    // Sender receives Receiver ICE
 
-            sessionId:
-              offer.sessionId,
+    if (
+      mode ===
+      "sender"
+    ) {
 
-            sdp:
-              receiverPeer
-                .localDescription
+      const pc =
+        senderPeers.get(
+          msg.receiverId
+        );
 
-          })
+
+      if (!pc)
+        return;
+
+
+      if (
+        pc.remoteDescription
+      ) {
+
+        await pc
+          .addIceCandidate(
+            msg.candidate
+          );
 
       }
 
+      else {
+
+        if (
+          !pendingSenderICE.has(
+            msg.receiverId
+          )
+        ) {
+
+          pendingSenderICE.set(
+            msg.receiverId,
+            []
+          );
+
+        }
+
+
+        pendingSenderICE
+          .get(
+            msg.receiverId
+          )
+          .push(
+            msg.candidate
+          );
+
+      }
+
+
+      return;
+
+    }
+
+
+    // Receiver receives Sender ICE
+
+    if (
+      mode ===
+      "receiver"
+    ) {
+
+      if (
+        receiverPeer &&
+        receiverPeer
+          .remoteDescription
+      ) {
+
+        await receiverPeer
+          .addIceCandidate(
+            msg.candidate
+          );
+
+      }
+
+      else {
+
+        pendingReceiverICE.push(
+          msg.candidate
+        );
+
+      }
+
+    }
+
+  }
+
+}
+
+
+// ============================================================
+// SEND BUTTON
+// ============================================================
+
+document
+.getElementById(
+  "sendButton"
+)
+.onclick =
+async () => {
+
+  try {
+
+    mode =
+      "sender";
+
+
+    setStatus(
+      "共有する画面を選択してください..."
     );
 
 
-    status(
-      "④ 完了\\n" +
-      "送信側で③をもう一度押してください。"
+    localStream =
+      await navigator
+        .mediaDevices
+        .getDisplayMedia({
+
+          video: {
+
+            frameRate: {
+              ideal: 30,
+              max: 30
+            }
+
+          },
+
+          audio:
+            false
+
+        });
+
+
+    const track =
+      localStream
+        .getVideoTracks()[0];
+
+
+    if (track) {
+
+      try {
+
+        track.contentHint =
+          "detail";
+
+      }
+
+      catch {}
+
+
+      const settings =
+        track.getSettings();
+
+
+      infoBox.textContent =
+        "入力: " +
+        (
+          settings.width ??
+          "?"
+        ) +
+        "×" +
+        (
+          settings.height ??
+          "?"
+        ) +
+        " / " +
+        (
+          settings.frameRate ??
+          "?"
+        ) +
+        "fps\\n" +
+        "送信: 最大1280×720 / 30fps";
+
+
+      track.onended =
+        () => {
+
+          for (
+            const pc
+            of senderPeers.values()
+          ) {
+
+            pc.close();
+
+          }
+
+
+          senderPeers.clear();
+
+
+          if (
+            socket &&
+            socket.readyState ===
+              WebSocket.OPEN
+          ) {
+
+            socket.close();
+
+          }
+
+
+          setStatus(
+            "画面共有を終了しました"
+          );
+
+        };
+
+    }
+
+
+    await connectSocket();
+
+
+    signal({
+
+      type:
+        "sender-join",
+
+      room:
+        getRoom()
+
+    });
+
+
+    setStatus(
+      "送信開始\\n受信者を待っています..."
     );
 
   }
@@ -2047,8 +2190,62 @@ async () => {
     );
 
 
-    status(
-      "受信接続エラー\\n" +
+    setStatus(
+      "送信エラー\\n" +
+      error.message
+    );
+
+  }
+
+};
+
+
+// ============================================================
+// RECEIVE BUTTON
+// ============================================================
+
+document
+.getElementById(
+  "receiveButton"
+)
+.onclick =
+async () => {
+
+  try {
+
+    mode =
+      "receiver";
+
+
+    setStatus(
+      "受信準備中..."
+    );
+
+
+    await connectSocket();
+
+
+    signal({
+
+      type:
+        "receiver-join",
+
+      room:
+        getRoom()
+
+    });
+
+  }
+
+  catch (error) {
+
+    console.error(
+      error
+    );
+
+
+    setStatus(
+      "受信エラー\\n" +
       error.message
     );
 
@@ -2070,7 +2267,9 @@ async () => {
 
   try {
 
-    if (!video.srcObject) {
+    if (
+      !video.srcObject
+    ) {
 
       throw new Error(
         "まだ映像を受信していません"
@@ -2100,7 +2299,7 @@ async () => {
     else {
 
       throw new Error(
-        "Fullscreen API非対応です"
+        "全画面表示に対応していません"
       );
 
     }
@@ -2109,12 +2308,7 @@ async () => {
 
   catch (error) {
 
-    console.error(
-      error
-    );
-
-
-    status(
+    setStatus(
       "全画面エラー\\n" +
       error.message
     );
@@ -2132,7 +2326,7 @@ async () => {
 
 
 // ============================================================
-// UI
+// HTTP
 // ============================================================
 
 app.get(
@@ -2147,19 +2341,42 @@ app.get(
 );
 
 
-// ============================================================
-// 404
-// ============================================================
-
-app.use(
+app.get(
+  "/health",
   (req, res) => {
 
-    res
-      .status(404)
-      .json({
-        error:
-          "Not found"
-      });
+    let receivers =
+      0;
+
+
+    for (
+      const room
+      of rooms.values()
+    ) {
+
+      receivers +=
+        room.receivers.size;
+
+    }
+
+
+    res.json({
+
+      ok:
+        true,
+
+      rooms:
+        rooms.size,
+
+      receivers,
+
+      websocket:
+        true,
+
+      webrtc:
+        true
+
+    });
 
   }
 );
@@ -2169,13 +2386,13 @@ app.use(
 // Start
 // ============================================================
 
-app.listen(
+server.listen(
   PORT,
   "0.0.0.0",
   () => {
 
     console.log(
-      "WebRTC Caster v2 running on port",
+      "WebRTC Caster listening on",
       PORT
     );
 
