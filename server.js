@@ -1955,7 +1955,7 @@ async () => {
           },
 
           audio:
-            false
+            true
 
         });
 
