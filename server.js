@@ -100,7 +100,13 @@ wss.on("connection", ws => {
           return;
         }
 
-        cleanup(ws);
+        if (ws.roomId) {
+          send(ws, {
+            type: "error",
+            message: "既にルームに参加しています"
+          });
+          return;
+        }
 
         const room = getRoom(roomId);
 
@@ -125,7 +131,6 @@ wss.on("connection", ws => {
               receiverId
             });
           }
-
         } else {
           ws.roomId = roomId;
           ws.role = "receiver";
@@ -153,6 +158,8 @@ wss.on("connection", ws => {
       if (!room) return;
 
       if (msg.type === "offer" && ws.role === "sender") {
+        if (room.sender !== ws) return;
+
         send(room.receivers.get(msg.receiverId), {
           type: "offer",
           sdp: msg.sdp
@@ -170,12 +177,15 @@ wss.on("connection", ws => {
       }
 
       if (msg.type === "ice") {
-        if (ws.role === "sender") {
+        if (ws.role === "sender" && room.sender === ws) {
           send(room.receivers.get(msg.receiverId), {
             type: "ice",
             candidate: msg.candidate
           });
-        } else if (ws.role === "receiver") {
+        } else if (
+          ws.role === "receiver" &&
+          room.receivers.get(ws.receiverId) === ws
+        ) {
           send(room.sender, {
             type: "ice",
             receiverId: ws.receiverId,
@@ -216,12 +226,12 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "6.0",
+    version: "8.0",
     rooms: rooms.size,
     clients: wss.clients.size
   });
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`WebRTC Caster v6 on port ${PORT}`);
+  console.log(`WebRTC Caster v8 on port ${PORT}`);
 });
