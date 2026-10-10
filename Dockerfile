@@ -7,8 +7,10 @@ COPY package.json ./
 RUN npm install --omit=dev
 
 COPY server.js ./
+COPY index.html ./
 
 ENV NODE_ENV=production
+ENV PORT=10000
 
 EXPOSE 10000
 
