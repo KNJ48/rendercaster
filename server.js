@@ -8,13 +8,13 @@ const server = http.createServer(app);
 
 const PORT = Number(process.env.PORT || 10000);
 
+const rooms = new Map();
+
 const wss = new WebSocketServer({
   server,
   path: "/signal",
   maxPayload: 256 * 1024
 });
-
-const rooms = new Map();
 
 function validRoom(id) {
   return typeof id === "string" &&
@@ -39,10 +39,9 @@ function send(ws, data) {
 }
 
 function cleanup(ws) {
-  const id = ws.roomId;
-  if (!id) return;
+  if (!ws.roomId) return;
 
-  const room = rooms.get(id);
+  const room = rooms.get(ws.roomId);
   if (!room) return;
 
   if (ws.role === "sender" && room.sender === ws) {
@@ -65,7 +64,7 @@ function cleanup(ws) {
   }
 
   if (!room.sender && room.receivers.size === 0) {
-    rooms.delete(id);
+    rooms.delete(ws.roomId);
   }
 
   ws.roomId = null;
@@ -74,7 +73,6 @@ function cleanup(ws) {
 }
 
 wss.on("connection", ws => {
-
   ws.roomId = null;
   ws.role = null;
   ws.receiverId = null;
@@ -88,9 +86,10 @@ wss.on("connection", ws => {
     try {
       const msg = JSON.parse(raw.toString());
 
-      if (msg.type === "sender-join" ||
-          msg.type === "receiver-join") {
-
+      if (
+        msg.type === "sender-join" ||
+        msg.type === "receiver-join"
+      ) {
         const roomId = String(msg.room || "");
 
         if (!validRoom(roomId)) {
@@ -105,22 +104,16 @@ wss.on("connection", ws => {
 
         const room = getRoom(roomId);
 
-        ws.roomId = roomId;
-
         if (msg.type === "sender-join") {
-
-          // 試作版では送信者の乗っ取りを避けるため、
-          // 既存送信者がいる場合は拒否する。
           if (room.sender && room.sender !== ws) {
-            ws.roomId = null;
-
             send(ws, {
               type: "error",
-              message: "このルームには既に送信者がいます"
+              message: "既に送信者がいます"
             });
             return;
           }
 
+          ws.roomId = roomId;
           ws.role = "sender";
           room.sender = ws;
 
@@ -134,7 +127,7 @@ wss.on("connection", ws => {
           }
 
         } else {
-
+          ws.roomId = roomId;
           ws.role = "receiver";
           ws.receiverId = crypto.randomUUID();
 
@@ -142,7 +135,6 @@ wss.on("connection", ws => {
 
           send(ws, {
             type: "receiver-ready",
-            receiverId: ws.receiverId,
             senderOnline: Boolean(room.sender)
           });
 
@@ -178,15 +170,12 @@ wss.on("connection", ws => {
       }
 
       if (msg.type === "ice") {
-
         if (ws.role === "sender") {
           send(room.receivers.get(msg.receiverId), {
             type: "ice",
             candidate: msg.candidate
           });
-        }
-
-        if (ws.role === "receiver") {
+        } else if (ws.role === "receiver") {
           send(room.sender, {
             type: "ice",
             receiverId: ws.receiverId,
@@ -204,7 +193,6 @@ wss.on("connection", ws => {
   ws.on("error", console.error);
 });
 
-// 切断されたWebSocketの掃除
 const heartbeat = setInterval(() => {
   for (const ws of wss.clients) {
     if (!ws.isAlive) {
@@ -228,12 +216,12 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "5.0",
+    version: "6.0",
     rooms: rooms.size,
-    websocketClients: wss.clients.size
+    clients: wss.clients.size
   });
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Caster v5 listening on ${PORT}`);
+  console.log(`WebRTC Caster v6 on port ${PORT}`);
 });
