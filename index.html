@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WebRTC Caster v6</title>
+<title>WebRTC Caster v7</title>
 
 <style>
 * {
@@ -41,9 +41,6 @@ input, select {
   background: #292c33;
   color: white;
   border: 1px solid #555;
-}
-
-input, select {
   width: 100%;
 }
 
@@ -117,7 +114,6 @@ video:fullscreen {
   max-height: none;
   margin: 0;
   border-radius: 0;
-  object-fit: contain;
 }
 
 small {
@@ -129,8 +125,8 @@ small {
 <body>
 <main>
 
-<h1>WebRTC Caster v6</h1>
-<small>Adaptive Quality & FPS Edition</small>
+<h1>WebRTC Caster v7</h1>
+<small>H.264 Priority Edition</small>
 
 <div id="status">準備完了</div>
 
@@ -184,21 +180,17 @@ small {
 
   <button id="applySettings">設定を適用</button>
 
-  <div id="settingsInfo" class="info">
-    設定待機中
-  </div>
+  <div id="settingsInfo" class="info">設定待機中</div>
 
   <small>
     FPS優先では必要に応じて解像度を下げます。
-    配信中でも変更できます。
+    H.264を優先して接続します。
   </small>
 </section>
 
 <section>
   <h2>送信統計</h2>
-  <div id="senderStats" class="info">
-    接続端末なし
-  </div>
+  <div id="senderStats" class="info">接続端末なし</div>
 </section>
 
 <section>
@@ -245,7 +237,6 @@ const MAX_BITRATE = 20_000_000;
 
 const video = $("video");
 
-// 自動調整の解像度候補
 const QUALITY_STEPS = [
   240, 360, 480, 540, 720, 1080, 1440, 2160
 ];
@@ -287,15 +278,55 @@ function createPeer() {
 }
 
 // ==================================================
+// H.264 PRIORITY
+// ==================================================
+
+function preferH264(pc) {
+
+  const transceiver = pc.getTransceivers()
+    .find(t => t.sender.track?.kind === "video");
+
+  if (!transceiver) return;
+
+  const capabilities =
+    RTCRtpSender.getCapabilities("video");
+
+  if (!capabilities) return;
+
+  const codecs = capabilities.codecs;
+
+  const h264 = codecs.filter(
+    c => c.mimeType.toLowerCase() === "video/h264"
+  );
+
+  const others = codecs.filter(
+    c => c.mimeType.toLowerCase() !== "video/h264"
+  );
+
+  if (h264.length > 0) {
+
+    try {
+      transceiver.setCodecPreferences([
+        ...h264,
+        ...others
+      ]);
+
+      console.log("H.264 priority enabled");
+
+    } catch (error) {
+      console.warn("H.264 priority failed:", error);
+    }
+  }
+}
+
+// ==================================================
 // SETTINGS
 // ==================================================
 
 function maxQuality() {
   const value = $("quality").value;
 
-  if (value === "native") {
-    return Infinity;
-  }
+  if (value === "native") return Infinity;
 
   return Number(value);
 }
@@ -307,10 +338,6 @@ function selectedFPS() {
   if (value === "auto") return currentFPS;
 
   return Number(value);
-}
-
-function getInitialQuality() {
-  return maxQuality();
 }
 
 function effectiveQuality(receiverId) {
@@ -337,7 +364,7 @@ function updateSettingsInfo() {
     "\n最大帯域: 20Mbps / 受信者" +
     "\n優先度: " +
     $("priority").selectedOptions[0].text +
-    "\nFPS優先時の最低解像度目標: 240p";
+    "\nCodec優先: H.264";
 }
 
 // ==================================================
@@ -415,11 +442,10 @@ async function applySettings() {
 
     currentFPS = 60;
 
-    // 手動設定変更時に自動調整状態をリセット
     for (const id of senderPeers.keys()) {
 
       peerQuality.set(id, {
-        height: getInitialQuality(),
+        height: maxQuality(),
         bad: 0,
         good: 0,
         lastChange: Date.now()
@@ -503,7 +529,7 @@ async function createSenderPeer(receiverId) {
   senderPeers.set(receiverId, pc);
 
   peerQuality.set(receiverId, {
-    height: getInitialQuality(),
+    height: maxQuality(),
     bad: 0,
     good: 0,
     lastChange: Date.now()
@@ -535,6 +561,9 @@ async function createSenderPeer(receiverId) {
         }
       }
     }
+
+    // ★ H.264を優先
+    preferH264(pc);
 
     const offer = await pc.createOffer();
 
@@ -1050,7 +1079,6 @@ async function updateReceiverStats() {
 
 function lowerQuality(height) {
 
-  // 元画質の場合は1080pから段階的に下げる
   if (height === Infinity) {
     return 1080;
   }
@@ -1098,7 +1126,6 @@ async function adaptiveQuality(reports) {
 
     const reason = report.qualityLimitationReason;
 
-    // ブラウザが品質制限情報を返さないなら変更しない
     if (typeof reason !== "string") continue;
 
     if (reason === "cpu" || reason === "bandwidth") {
@@ -1113,13 +1140,11 @@ async function adaptiveQuality(reports) {
 
     let next = state.height;
 
-    // 3回連続で品質制限があれば画質を下げる
     if (state.bad >= 3) {
       next = lowerQuality(state.height);
       state.bad = 0;
     }
 
-    // 15回連続で制限なしなら画質を上げる
     if (state.good >= 15) {
       next = raiseQuality(state.height, maxQuality());
       state.good = 0;
@@ -1133,23 +1158,10 @@ async function adaptiveQuality(reports) {
     state.lastChange = now;
 
     try {
-
       await configurePeer(id);
-
-      console.log(
-        "Adaptive quality:",
-        id,
-        previous,
-        "->",
-        next
-      );
-
     } catch (e) {
-
-      // 設定変更失敗時は元に戻す
       state.height = previous;
-
-      console.warn("Adaptive quality error:", e);
+      console.warn("Adaptive quality:", e);
     }
   }
 }
@@ -1236,7 +1248,7 @@ async function autoFPS(reports) {
 
     currentFPS = previous;
 
-    console.warn("Auto FPS error:", e);
+    console.warn("Auto FPS:", e);
   }
 }
 
@@ -1255,10 +1267,7 @@ setInterval(async () => {
 
     await updateReceiverStats();
 
-    // FPS優先の場合は独自画質調整
     await adaptiveQuality(reports);
-
-    // FPS自動モードの場合は上限を調整
     await autoFPS(reports);
 
   } catch (e) {
