@@ -3,12 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WebRTC Caster v8</title>
+<title>WebRTC Caster v9</title>
 
 <style>
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 body {
   margin: 0;
@@ -44,9 +42,7 @@ input, select {
   width: 100%;
 }
 
-select {
-  margin: 8px 0 16px;
-}
+select { margin: 8px 0 16px; }
 
 button {
   border: 0;
@@ -56,25 +52,12 @@ button {
   margin: 4px;
 }
 
-button:hover {
-  filter: brightness(1.15);
-}
+button:hover { filter: brightness(1.15); }
+button:disabled { opacity: .5; }
 
-button:disabled {
-  opacity: .5;
-}
-
-#sendButton {
-  background: #16834b;
-}
-
-#stopButton {
-  background: #b83232;
-}
-
-#fullscreen {
-  background: #7544c7;
-}
+#sendButton { background: #16834b; }
+#stopButton { background: #b83232; }
+#fullscreen { background: #7544c7; }
 
 #status, .info {
   white-space: pre-wrap;
@@ -86,18 +69,10 @@ button:disabled {
   line-height: 1.6;
 }
 
-#status {
-  color: #90d8ff;
-}
+#status { color: #90d8ff; }
+.info { color: #ccc; font-size: 13px; }
 
-.info {
-  color: #ccc;
-  font-size: 13px;
-}
-
-label {
-  display: block;
-}
+label { display: block; }
 
 video {
   width: 100%;
@@ -116,17 +91,15 @@ video:fullscreen {
   border-radius: 0;
 }
 
-small {
-  color: #aaa;
-}
+small { color: #aaa; }
 </style>
 </head>
 
 <body>
 <main>
 
-<h1>WebRTC Caster v8</h1>
-<small>FPS-Based Adaptive Quality Edition</small>
+<h1>WebRTC Caster v9</h1>
+<small>Uncapped FPS Edition</small>
 
 <div id="status">準備完了</div>
 
@@ -161,8 +134,8 @@ small {
     <option value="auto">自動調整</option>
     <option value="15">15 FPS</option>
     <option value="30">30 FPS</option>
-    <option value="60" selected>60 FPS</option>
-    <option value="browser">ブラウザ任せ</option>
+    <option value="60">60 FPS</option>
+    <option value="uncapped" selected>制限なし</option>
   </select>
 
   <label>品質優先度</label>
@@ -178,13 +151,20 @@ small {
     </option>
   </select>
 
+  <label>映像の種類</label>
+  <select id="contentHint">
+    <option value="motion" selected>動き優先</option>
+    <option value="detail">文字・細部優先</option>
+    <option value="text">文字中心</option>
+  </select>
+
   <button id="applySettings">設定を適用</button>
 
   <div id="settingsInfo" class="info">設定待機中</div>
 
   <small>
-    FPS優先モードでは、実測FPSが目標を下回ると
-    自動で解像度を下げます。
+    制限なしではCaster側のFPS上限を外します。
+    実際のFPSはブラウザ・端末・共有対象によって変わります。
   </small>
 </section>
 
@@ -208,10 +188,6 @@ small {
 </main>
 
 <script>
-
-// ==================================================
-// STATE
-// ==================================================
 
 const $ = id => document.getElementById(id);
 
@@ -327,7 +303,7 @@ function maxQuality() {
 function selectedFPS() {
   const value = $("fpsMode").value;
 
-  if (value === "browser") return null;
+  if (value === "uncapped") return null;
   if (value === "auto") return currentFPS;
 
   return Number(value);
@@ -352,13 +328,14 @@ function updateSettingsInfo() {
   $("settingsInfo").textContent =
     "画質上限: " +
     $("quality").selectedOptions[0].text +
-    "\nFPS目標: " +
-    (selectedFPS() ?? "ブラウザ任せ") +
+    "\nFPS上限: " +
+    (selectedFPS() ?? "指定なし") +
     "\n最大帯域: 20Mbps / 受信者" +
     "\n優先度: " +
     $("priority").selectedOptions[0].text +
-    "\nCodec優先: H.264" +
-    "\n画質調整基準: 実測FPS";
+    "\n映像ヒント: " +
+    $("contentHint").value +
+    "\nCodec優先: H.264";
 }
 
 // ==================================================
@@ -443,6 +420,14 @@ async function applySettings() {
       });
     }
 
+    if (localStream) {
+      const track = localStream.getVideoTracks()[0];
+
+      if (track) {
+        track.contentHint = $("contentHint").value;
+      }
+    }
+
     const errors = [];
 
     for (const id of senderPeers.keys()) {
@@ -495,6 +480,7 @@ function connectSocket() {
     };
 
     socket.onmessage = async event => {
+
       try {
         await handleSignal(JSON.parse(event.data));
       } catch (e) {
@@ -773,14 +759,10 @@ $("sendButton").onclick = async () => {
 
     status("共有画面を選択してください...");
 
+    // FPSの上限を明示しない
     localStream =
       await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          frameRate: {
-            ideal: 60,
-            max: 60
-          }
-        },
+        video: true,
         audio: true
       });
 
@@ -789,7 +771,7 @@ $("sendButton").onclick = async () => {
     const track = localStream.getVideoTracks()[0];
 
     if (track) {
-      track.contentHint = "detail";
+      track.contentHint = $("contentHint").value;
       track.onended = () => stop();
     }
 
@@ -834,7 +816,6 @@ function stop(showStatus = true) {
 
   localStream = null;
   mode = null;
-
   video.srcObject = null;
 
   if (showStatus) status("停止しました");
@@ -1058,9 +1039,7 @@ async function updateReceiverStats() {
 
 function lowerQuality(height) {
 
-  if (height === Infinity) {
-    return 1080;
-  }
+  if (height === Infinity) return 1080;
 
   const lower = QUALITY_STEPS.filter(q => q < height);
 
@@ -1092,6 +1071,8 @@ async function adaptiveQuality(reports) {
 
   const targetFPS = selectedFPS();
 
+  // 制限なしならFPS目標がないため
+  // FPS連動の自動画質調整は実行しない
   if (!targetFPS) return;
 
   const now = Date.now();
@@ -1119,53 +1100,36 @@ async function adaptiveQuality(reports) {
       continue;
     }
 
-    // 設定変更直後は5秒待機
     if (now - state.lastChange < 5000) {
       continue;
     }
 
     let next = state.height;
 
-    // ----------------------------------
-    // 目標FPSの90%未満
-    // ----------------------------------
-
     if (actualFPS < targetFPS * 0.90) {
 
       state.bad++;
       state.good = 0;
 
-      // 3回連続で低FPSなら解像度を下げる
       if (state.bad >= 3) {
-
         next = lowerQuality(state.height);
-
         state.bad = 0;
       }
-    }
 
-    // ----------------------------------
-    // 目標FPSの98%以上
-    // ----------------------------------
-
-    else if (actualFPS >= targetFPS * 0.98) {
+    } else if (actualFPS >= targetFPS * 0.98) {
 
       state.good++;
       state.bad = 0;
 
-      // 10回連続で良好なら解像度を上げる
       if (state.good >= 10) {
-
         next = raiseQuality(
           state.height,
           maxQuality()
         );
-
         state.good = 0;
       }
-    }
 
-    else {
+    } else {
       state.bad = 0;
       state.good = 0;
     }
@@ -1178,23 +1142,9 @@ async function adaptiveQuality(reports) {
     state.lastChange = now;
 
     try {
-
       await configurePeer(id);
-
-      console.log(
-        "FPS Adaptive:",
-        id,
-        previous,
-        "→",
-        next,
-        "FPS:",
-        actualFPS
-      );
-
     } catch (e) {
-
       state.height = previous;
-
       console.warn("Adaptive quality:", e);
     }
   }
@@ -1223,8 +1173,6 @@ async function autoFPS(reports) {
 
   if (now - lastFPSChange < 10000) return;
 
-  // FPS優先＋自動FPSでは、
-  // まず画質を下げるためFPS上限は維持する。
   if ($("priority").value === "maintain-framerate") {
     return;
   }
@@ -1285,9 +1233,7 @@ async function autoFPS(reports) {
     updateSettingsInfo();
 
   } catch (e) {
-
     currentFPS = previous;
-
     console.warn("Auto FPS:", e);
   }
 }
