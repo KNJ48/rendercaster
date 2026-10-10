@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WebRTC Caster v7</title>
+<title>WebRTC Caster v8</title>
 
 <style>
 * {
@@ -125,8 +125,8 @@ small {
 <body>
 <main>
 
-<h1>WebRTC Caster v7</h1>
-<small>H.264 Priority Edition</small>
+<h1>WebRTC Caster v8</h1>
+<small>FPS-Based Adaptive Quality Edition</small>
 
 <div id="status">準備完了</div>
 
@@ -158,10 +158,10 @@ small {
 
   <label>FPS</label>
   <select id="fpsMode">
-    <option value="auto" selected>自動調整</option>
+    <option value="auto">自動調整</option>
     <option value="15">15 FPS</option>
     <option value="30">30 FPS</option>
-    <option value="60">60 FPS</option>
+    <option value="60" selected>60 FPS</option>
     <option value="browser">ブラウザ任せ</option>
   </select>
 
@@ -170,10 +170,10 @@ small {
     <option value="maintain-resolution">
       解像度優先
     </option>
-    <option value="maintain-framerate">
+    <option value="maintain-framerate" selected>
       FPS優先
     </option>
-    <option value="balanced" selected>
+    <option value="balanced">
       バランス
     </option>
   </select>
@@ -183,8 +183,8 @@ small {
   <div id="settingsInfo" class="info">設定待機中</div>
 
   <small>
-    FPS優先では必要に応じて解像度を下げます。
-    H.264を優先して接続します。
+    FPS優先モードでは、実測FPSが目標を下回ると
+    自動で解像度を下げます。
   </small>
 </section>
 
@@ -303,19 +303,15 @@ function preferH264(pc) {
     c => c.mimeType.toLowerCase() !== "video/h264"
   );
 
-  if (h264.length > 0) {
+  if (!h264.length) return;
 
-    try {
-      transceiver.setCodecPreferences([
-        ...h264,
-        ...others
-      ]);
-
-      console.log("H.264 priority enabled");
-
-    } catch (error) {
-      console.warn("H.264 priority failed:", error);
-    }
+  try {
+    transceiver.setCodecPreferences([
+      ...h264,
+      ...others
+    ]);
+  } catch (e) {
+    console.warn("H264 preference:", e);
   }
 }
 
@@ -325,10 +321,7 @@ function preferH264(pc) {
 
 function maxQuality() {
   const value = $("quality").value;
-
-  if (value === "native") return Infinity;
-
-  return Number(value);
+  return value === "native" ? Infinity : Number(value);
 }
 
 function selectedFPS() {
@@ -359,12 +352,13 @@ function updateSettingsInfo() {
   $("settingsInfo").textContent =
     "画質上限: " +
     $("quality").selectedOptions[0].text +
-    "\nFPS上限: " +
+    "\nFPS目標: " +
     (selectedFPS() ?? "ブラウザ任せ") +
     "\n最大帯域: 20Mbps / 受信者" +
     "\n優先度: " +
     $("priority").selectedOptions[0].text +
-    "\nCodec優先: H.264";
+    "\nCodec優先: H.264" +
+    "\n画質調整基準: 実測FPS";
 }
 
 // ==================================================
@@ -386,7 +380,6 @@ async function configureSender(sender, receiverId) {
   let scale = 1;
 
   if (Number.isFinite(targetHeight)) {
-
     scale = Math.max(
       1,
       sourceHeight / targetHeight,
@@ -424,10 +417,9 @@ async function configurePeer(receiverId) {
   if (!pc) return;
 
   for (const sender of pc.getSenders()) {
-
-    if (sender.track?.kind !== "video") continue;
-
-    await configureSender(sender, receiverId);
+    if (sender.track?.kind === "video") {
+      await configureSender(sender, receiverId);
+    }
   }
 }
 
@@ -443,7 +435,6 @@ async function applySettings() {
     currentFPS = 60;
 
     for (const id of senderPeers.keys()) {
-
       peerQuality.set(id, {
         height: maxQuality(),
         bad: 0,
@@ -466,8 +457,7 @@ async function applySettings() {
 
     status(
       errors.length
-        ? "一部の設定変更に失敗しました:\n" +
-          errors.join("\n")
+        ? "一部設定変更に失敗:\n" + errors.join("\n")
         : "配信設定を更新しました"
     );
 
@@ -500,12 +490,11 @@ function connectSocket() {
 
     socket.onclose = () => {
       if (mode) {
-        status("シグナリングサーバーとの接続が切れました");
+        status("シグナリング接続が切れました");
       }
     };
 
     socket.onmessage = async event => {
-
       try {
         await handleSignal(JSON.parse(event.data));
       } catch (e) {
@@ -557,16 +546,14 @@ async function createSenderPeer(receiverId) {
         try {
           await configureSender(sender, receiverId);
         } catch (e) {
-          console.warn("映像設定:", e);
+          console.warn("Video settings:", e);
         }
       }
     }
 
-    // ★ H.264を優先
     preferH264(pc);
 
     const offer = await pc.createOffer();
-
     await pc.setLocalDescription(offer);
 
     signal({
@@ -656,13 +643,11 @@ async function handleSignal(msg) {
   }
 
   if (msg.type === "receiver-ready") {
-
     status(
       msg.senderOnline
         ? "送信者を発見。接続しています..."
         : "送信者を待っています..."
     );
-
     return;
   }
 
@@ -731,7 +716,6 @@ async function handleSignal(msg) {
     pendingReceiverICE = [];
 
     const answer = await pc.createAnswer();
-
     await pc.setLocalDescription(answer);
 
     signal({
@@ -872,7 +856,6 @@ $("receiveButton").onclick = async () => {
     const roomId = room();
 
     mode = "receiver";
-
     status("受信準備中...");
 
     await connectSocket();
@@ -994,10 +977,7 @@ async function updateSenderStats() {
         time: report.timestamp
       });
 
-      reports.push({
-        id,
-        report
-      });
+      reports.push({ id, report });
 
       const quality = peerQuality.get(id);
 
@@ -1043,7 +1023,6 @@ async function updateReceiverStats() {
   try {
 
     const stats = await receiverPeer.getStats();
-
     const report = videoReport(stats, "inbound-rtp");
 
     if (!report) return;
@@ -1074,7 +1053,7 @@ async function updateReceiverStats() {
 }
 
 // ==================================================
-// ADAPTIVE QUALITY
+// FPS-BASED ADAPTIVE QUALITY
 // ==================================================
 
 function lowerQuality(height) {
@@ -1085,18 +1064,20 @@ function lowerQuality(height) {
 
   const lower = QUALITY_STEPS.filter(q => q < height);
 
-  return lower.length ? lower[lower.length - 1] : height;
+  return lower.length
+    ? lower[lower.length - 1]
+    : height;
 }
 
 function raiseQuality(height, max) {
 
-  const higher = QUALITY_STEPS.filter(q => q > height);
+  const higher = QUALITY_STEPS.filter(
+    q => q > height && q <= max
+  );
 
-  if (!higher.length) {
-    return max;
-  }
-
-  return Math.min(higher[0], max);
+  return higher.length
+    ? higher[0]
+    : height;
 }
 
 async function adaptiveQuality(reports) {
@@ -1109,6 +1090,10 @@ async function adaptiveQuality(reports) {
     return;
   }
 
+  const targetFPS = selectedFPS();
+
+  if (!targetFPS) return;
+
   const now = Date.now();
 
   for (const { id, report } of reports) {
@@ -1116,37 +1101,72 @@ async function adaptiveQuality(reports) {
     const state = peerQuality.get(id);
     const pc = senderPeers.get(id);
 
-    if (!state || !pc || pc.connectionState !== "connected") {
+    if (
+      !state ||
+      !pc ||
+      pc.connectionState !== "connected"
+    ) {
       continue;
     }
 
-    if (now - state.lastChange < 10000) {
+    const actualFPS = report.framesPerSecond;
+
+    if (
+      typeof actualFPS !== "number" ||
+      !Number.isFinite(actualFPS) ||
+      actualFPS <= 0
+    ) {
       continue;
     }
 
-    const reason = report.qualityLimitationReason;
-
-    if (typeof reason !== "string") continue;
-
-    if (reason === "cpu" || reason === "bandwidth") {
-      state.bad++;
-      state.good = 0;
-    } else if (reason === "none") {
-      state.good++;
-      state.bad = 0;
-    } else {
+    // 設定変更直後は5秒待機
+    if (now - state.lastChange < 5000) {
       continue;
     }
 
     let next = state.height;
 
-    if (state.bad >= 3) {
-      next = lowerQuality(state.height);
-      state.bad = 0;
+    // ----------------------------------
+    // 目標FPSの90%未満
+    // ----------------------------------
+
+    if (actualFPS < targetFPS * 0.90) {
+
+      state.bad++;
+      state.good = 0;
+
+      // 3回連続で低FPSなら解像度を下げる
+      if (state.bad >= 3) {
+
+        next = lowerQuality(state.height);
+
+        state.bad = 0;
+      }
     }
 
-    if (state.good >= 15) {
-      next = raiseQuality(state.height, maxQuality());
+    // ----------------------------------
+    // 目標FPSの98%以上
+    // ----------------------------------
+
+    else if (actualFPS >= targetFPS * 0.98) {
+
+      state.good++;
+      state.bad = 0;
+
+      // 10回連続で良好なら解像度を上げる
+      if (state.good >= 10) {
+
+        next = raiseQuality(
+          state.height,
+          maxQuality()
+        );
+
+        state.good = 0;
+      }
+    }
+
+    else {
+      state.bad = 0;
       state.good = 0;
     }
 
@@ -1158,9 +1178,23 @@ async function adaptiveQuality(reports) {
     state.lastChange = now;
 
     try {
+
       await configurePeer(id);
+
+      console.log(
+        "FPS Adaptive:",
+        id,
+        previous,
+        "→",
+        next,
+        "FPS:",
+        actualFPS
+      );
+
     } catch (e) {
+
       state.height = previous;
+
       console.warn("Adaptive quality:", e);
     }
   }
@@ -1188,6 +1222,12 @@ async function autoFPS(reports) {
   const now = Date.now();
 
   if (now - lastFPSChange < 10000) return;
+
+  // FPS優先＋自動FPSでは、
+  // まず画質を下げるためFPS上限は維持する。
+  if ($("priority").value === "maintain-framerate") {
+    return;
+  }
 
   const reasons = reports.map(x =>
     x.report.qualityLimitationReason
