@@ -16,11 +16,6 @@ const wss = new WebSocketServer({
   maxPayload: 256 * 1024
 });
 
-function validRoom(id) {
-  return typeof id === "string" &&
-    /^[A-Za-z0-9_-]{1,32}$/.test(id);
-}
-
 function getRoom(id) {
   if (!rooms.has(id)) {
     rooms.set(id, {
@@ -39,9 +34,10 @@ function send(ws, data) {
 }
 
 function cleanup(ws) {
-  if (!ws.roomId) return;
+  const id = ws.roomId;
+  if (!id) return;
 
-  const room = rooms.get(ws.roomId);
+  const room = rooms.get(id);
   if (!room) return;
 
   if (ws.role === "sender" && room.sender === ws) {
@@ -64,7 +60,7 @@ function cleanup(ws) {
   }
 
   if (!room.sender && room.receivers.size === 0) {
-    rooms.delete(ws.roomId);
+    rooms.delete(id);
   }
 
   ws.roomId = null;
@@ -92,7 +88,7 @@ wss.on("connection", ws => {
       ) {
         const roomId = String(msg.room || "");
 
-        if (!validRoom(roomId)) {
+        if (!/^[A-Za-z0-9_-]{1,32}$/.test(roomId)) {
           send(ws, {
             type: "error",
             message: "ルームIDが不正です"
@@ -103,7 +99,7 @@ wss.on("connection", ws => {
         if (ws.roomId) {
           send(ws, {
             type: "error",
-            message: "既にルームに参加しています"
+            message: "既に参加しています"
           });
           return;
         }
@@ -111,7 +107,7 @@ wss.on("connection", ws => {
         const room = getRoom(roomId);
 
         if (msg.type === "sender-join") {
-          if (room.sender && room.sender !== ws) {
+          if (room.sender) {
             send(ws, {
               type: "error",
               message: "既に送信者がいます"
@@ -125,12 +121,13 @@ wss.on("connection", ws => {
 
           send(ws, { type: "sender-ready" });
 
-          for (const receiverId of room.receivers.keys()) {
+          for (const id of room.receivers.keys()) {
             send(ws, {
               type: "receiver-joined",
-              receiverId
+              receiverId: id
             });
           }
+
         } else {
           ws.roomId = roomId;
           ws.role = "receiver";
@@ -158,13 +155,10 @@ wss.on("connection", ws => {
       if (!room) return;
 
       if (msg.type === "offer" && ws.role === "sender") {
-        if (room.sender !== ws) return;
-
         send(room.receivers.get(msg.receiverId), {
           type: "offer",
           sdp: msg.sdp
         });
-        return;
       }
 
       if (msg.type === "answer" && ws.role === "receiver") {
@@ -173,19 +167,15 @@ wss.on("connection", ws => {
           receiverId: ws.receiverId,
           sdp: msg.sdp
         });
-        return;
       }
 
       if (msg.type === "ice") {
-        if (ws.role === "sender" && room.sender === ws) {
+        if (ws.role === "sender") {
           send(room.receivers.get(msg.receiverId), {
             type: "ice",
             candidate: msg.candidate
           });
-        } else if (
-          ws.role === "receiver" &&
-          room.receivers.get(ws.receiverId) === ws
-        ) {
+        } else if (ws.role === "receiver") {
           send(room.sender, {
             type: "ice",
             receiverId: ws.receiverId,
@@ -217,21 +207,17 @@ const heartbeat = setInterval(() => {
 
 wss.on("close", () => clearInterval(heartbeat));
 
-app.get("/", (req, res) => {
-  res.sendFile("index.html", {
-    root: process.cwd()
-  });
-});
+app.use(express.static(process.cwd()));
 
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    version: "8.0",
+    version: "11.0",
     rooms: rooms.size,
     clients: wss.clients.size
   });
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`WebRTC Caster v8 on port ${PORT}`);
+  console.log(`WebRTC Caster v11 running on ${PORT}`);
 });
