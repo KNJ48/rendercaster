@@ -1,23 +1,21 @@
 "use strict";
 
-let canvas = null;
-let ctx = null;
+let canvas;
+let ctx;
 
 let width = 1280;
 let height = 720;
 
-let initialized = false;
-
-let frameCount = 0;
+let ready = false;
+let frames = 0;
 let lastTime = performance.now();
 
-function init(w, h) {
-
+function initialize(w, h) {
   if (
     typeof OffscreenCanvas === "undefined" ||
     typeof VideoFrame === "undefined"
   ) {
-    throw new Error("必要なWorker映像APIがありません");
+    throw new Error("必要な映像APIがありません");
   }
 
   width = w;
@@ -26,27 +24,24 @@ function init(w, h) {
   canvas = new OffscreenCanvas(width, height);
 
   ctx = canvas.getContext("2d", {
-    alpha: false
+    alpha: false,
+    desynchronized: true
   });
 
   if (!ctx) {
     throw new Error("Canvas初期化失敗");
   }
 
-  initialized = true;
+  ready = true;
 
-  self.postMessage({
-    type: "ready"
-  });
+  self.postMessage({ type: "ready" });
 }
 
 function processFrame(frame) {
-
   let output = null;
 
   try {
-
-    if (!initialized) {
+    if (!ready) {
       throw new Error("Worker未初期化");
     }
 
@@ -61,7 +56,7 @@ function processFrame(frame) {
     const dw = sw * scale;
     const dh = sh * scale;
 
-    ctx.fillStyle = "black";
+    ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, width, height);
 
     ctx.drawImage(
@@ -83,60 +78,51 @@ function processFrame(frame) {
 
     output = null;
 
-    frameCount++;
+    frames++;
 
     const now = performance.now();
 
     if (now - lastTime >= 1000) {
       self.postMessage({
         type: "stats",
-        fps: frameCount
+        fps: frames
       });
 
-      frameCount = 0;
+      frames = 0;
       lastTime = now;
     }
 
   } catch (error) {
-
     self.postMessage({
       type: "frame-error",
       message: error.message
     });
-
   } finally {
-
     frame.close();
-
-    if (output) {
-      output.close();
-    }
+    output?.close();
   }
 }
 
 self.onmessage = event => {
-
   const msg = event.data;
 
   if (msg.type === "init") {
     try {
-      init(msg.width, msg.height);
+      initialize(msg.width, msg.height);
     } catch (error) {
       self.postMessage({
         type: "error",
         message: error.message
       });
     }
-    return;
   }
 
   if (msg.type === "frame") {
     processFrame(msg.frame);
-    return;
   }
 
   if (msg.type === "stop") {
-    initialized = false;
+    ready = false;
     canvas = null;
     ctx = null;
   }
