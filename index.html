@@ -1496,6 +1496,53 @@ setInterval(async () => {
 
 }, 1000);
 
+  document.getElementById("sendButton")
+  .addEventListener("click", async () => {
+    console.log("送信ボタンが押されました");
+
+    try {
+      const room = getRoom();
+
+      status("共有する画面を選択してください...");
+
+      sourceStream =
+        await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: true
+        });
+
+      status("画面取得成功！");
+
+      if ($("renderMode").value === "worker") {
+        try {
+          workerController =
+            await createWorkerStream(sourceStream);
+
+          sendStream = workerController.stream;
+        } catch (error) {
+          console.warn("Worker失敗:", error);
+          sendStream = sourceStream;
+        }
+      } else {
+        sendStream = sourceStream;
+      }
+
+      role = "sender";
+
+      await connectSocket();
+
+      signal({
+        type: "sender-join",
+        room
+      });
+
+      status("送信準備完了");
+
+    } catch (error) {
+      console.error(error);
+      status("送信エラー: " + error.message);
+    }
+  });
 </script>
 
 </body>
