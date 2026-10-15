@@ -6,8 +6,7 @@ COPY package.json ./
 
 RUN npm install --omit=dev
 
-COPY server.js ./
-COPY index.html ./
+COPY . .
 
 ENV NODE_ENV=production
 ENV PORT=10000
