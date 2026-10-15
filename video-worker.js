@@ -1,159 +1,99 @@
-// ============================================================
-// WebRTC Caster v12
-// VideoFrame Processing Worker
-// ============================================================
+"use strict";
 
 let canvas = null;
 let ctx = null;
 
-let outputWidth = 1280;
-let outputHeight = 720;
-
-let frames = 0;
-let lastTime = performance.now();
+let width = 1280;
+let height = 720;
 
 let initialized = false;
 
+let frameCount = 0;
+let lastTime = performance.now();
 
-// ============================================================
-// INIT
-// ============================================================
-
-function initialize(width, height) {
-
-  if (typeof OffscreenCanvas === "undefined") {
-    throw new Error("OffscreenCanvas is unavailable");
-  }
-
-  if (typeof VideoFrame === "undefined") {
-    throw new Error("VideoFrame is unavailable");
-  }
+function init(w, h) {
 
   if (
-    !Number.isInteger(width) ||
-    !Number.isInteger(height) ||
-    width < 1 ||
-    height < 1 ||
-    width > 7680 ||
-    height > 4320
+    typeof OffscreenCanvas === "undefined" ||
+    typeof VideoFrame === "undefined"
   ) {
-    throw new Error("Invalid canvas size");
+    throw new Error("必要なWorker映像APIがありません");
   }
 
-  outputWidth = width;
-  outputHeight = height;
+  width = w;
+  height = h;
 
-  canvas = new OffscreenCanvas(
-    outputWidth,
-    outputHeight
-  );
+  canvas = new OffscreenCanvas(width, height);
 
   ctx = canvas.getContext("2d", {
-    alpha: false,
-    desynchronized: true
+    alpha: false
   });
 
   if (!ctx) {
-    throw new Error("Cannot create Canvas2D context");
+    throw new Error("Canvas初期化失敗");
   }
 
   initialized = true;
 
   self.postMessage({
-    type: "ready",
-    width: outputWidth,
-    height: outputHeight
+    type: "ready"
   });
 }
 
-
-// ============================================================
-// PROCESS FRAME
-// ============================================================
-
 function processFrame(frame) {
-
-  if (!initialized || !ctx) {
-    frame.close();
-
-    self.postMessage({
-      type: "frame-done",
-      dropped: true
-    });
-
-    return;
-  }
 
   let output = null;
 
   try {
 
+    if (!initialized) {
+      throw new Error("Worker未初期化");
+    }
+
     const sw = frame.displayWidth;
     const sh = frame.displayHeight;
 
-    if (!sw || !sh) {
-      throw new Error("Invalid frame dimensions");
-    }
-
-    // 縦横比を維持
     const scale = Math.min(
-      outputWidth / sw,
-      outputHeight / sh
+      width / sw,
+      height / sh
     );
 
-    const width = sw * scale;
-    const height = sh * scale;
+    const dw = sw * scale;
+    const dh = sh * scale;
 
-    const x = (outputWidth - width) / 2;
-    const y = (outputHeight - height) / 2;
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, width, height);
 
-    // 黒背景
-    ctx.fillStyle = "#000000";
-
-    ctx.fillRect(
-      0,
-      0,
-      outputWidth,
-      outputHeight
-    );
-
-    // 元映像を描画
     ctx.drawImage(
       frame,
-      x,
-      y,
-      width,
-      height
+      (width - dw) / 2,
+      (height - dh) / 2,
+      dw,
+      dh
     );
 
-    // 加工済みVideoFrameを生成
     output = new VideoFrame(canvas, {
       timestamp: frame.timestamp
     });
 
-    // 所有権をメインスレッドへ移動
-    self.postMessage(
-      {
-        type: "frame",
-        frame: output
-      },
-      [output]
-    );
+    self.postMessage({
+      type: "frame",
+      frame: output
+    }, [output]);
 
     output = null;
 
-    frames++;
+    frameCount++;
 
     const now = performance.now();
 
     if (now - lastTime >= 1000) {
-
       self.postMessage({
         type: "stats",
-        fps: frames
+        fps: frameCount
       });
 
-      frames = 0;
+      frameCount = 0;
       lastTime = now;
     }
 
@@ -164,11 +104,6 @@ function processFrame(frame) {
       message: error.message
     });
 
-    self.postMessage({
-      type: "frame-done",
-      dropped: true
-    });
-
   } finally {
 
     frame.close();
@@ -176,58 +111,33 @@ function processFrame(frame) {
     if (output) {
       output.close();
     }
-
   }
 }
-
-
-// ============================================================
-// MESSAGE
-// ============================================================
 
 self.onmessage = event => {
 
   const msg = event.data;
 
   if (msg.type === "init") {
-
     try {
-
-      initialize(
-        msg.width,
-        msg.height
-      );
-
+      init(msg.width, msg.height);
     } catch (error) {
-
       self.postMessage({
         type: "error",
         message: error.message
       });
-
     }
-
     return;
   }
 
   if (msg.type === "frame") {
-
     processFrame(msg.frame);
-
     return;
   }
 
   if (msg.type === "stop") {
-
     initialized = false;
-
     canvas = null;
     ctx = null;
-
-    self.postMessage({
-      type: "stopped"
-    });
-
   }
-
 };
