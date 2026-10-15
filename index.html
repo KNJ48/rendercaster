@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WebRTC Caster v9</title>
+<title>WebRTC Caster v10</title>
 
 <style>
 * { box-sizing: border-box; }
@@ -42,7 +42,9 @@ input, select {
   width: 100%;
 }
 
-select { margin: 8px 0 16px; }
+select {
+  margin: 8px 0 16px;
+}
 
 button {
   border: 0;
@@ -98,8 +100,8 @@ small { color: #aaa; }
 <body>
 <main>
 
-<h1>WebRTC Caster v9</h1>
-<small>Uncapped FPS Edition</small>
+<h1>WebRTC Caster v10</h1>
+<small>Canvas Streaming Experiment</small>
 
 <div id="status">準備完了</div>
 
@@ -115,6 +117,24 @@ small { color: #aaa; }
   <button id="stopButton">■ 停止</button>
 
   <div id="senderInfo" class="info">未送信</div>
+</section>
+
+<section>
+  <h2>映像処理方式</h2>
+
+  <select id="renderMode">
+    <option value="standard" selected>
+      標準WebRTC
+    </option>
+    <option value="canvas">
+      Canvas経由（実験）
+    </option>
+  </select>
+
+  <small>
+    送信開始前に選択してください。
+    Canvas経由では720p/60FPSでの描画を試みます。
+  </small>
 </section>
 
 <section>
@@ -161,11 +181,6 @@ small { color: #aaa; }
   <button id="applySettings">設定を適用</button>
 
   <div id="settingsInfo" class="info">設定待機中</div>
-
-  <small>
-    制限なしではCaster側のFPS上限を外します。
-    実際のFPSはブラウザ・端末・共有対象によって変わります。
-  </small>
 </section>
 
 <section>
@@ -189,11 +204,19 @@ small { color: #aaa; }
 
 <script>
 
+// ==================================================
+// STATE
+// ==================================================
+
 const $ = id => document.getElementById(id);
 
 let socket = null;
 let mode = null;
+
+let sourceStream = null;
 let localStream = null;
+let canvasController = null;
+
 let receiverPeer = null;
 
 const senderPeers = new Map();
@@ -254,7 +277,7 @@ function createPeer() {
 }
 
 // ==================================================
-// H.264 PRIORITY
+// H264 PRIORITY
 // ==================================================
 
 function preferH264(pc) {
@@ -264,31 +287,120 @@ function preferH264(pc) {
 
   if (!transceiver) return;
 
-  const capabilities =
-    RTCRtpSender.getCapabilities("video");
+  const caps = RTCRtpSender.getCapabilities("video");
 
-  if (!capabilities) return;
+  if (!caps) return;
 
-  const codecs = capabilities.codecs;
-
-  const h264 = codecs.filter(
+  const h264 = caps.codecs.filter(
     c => c.mimeType.toLowerCase() === "video/h264"
   );
 
-  const others = codecs.filter(
+  const other = caps.codecs.filter(
     c => c.mimeType.toLowerCase() !== "video/h264"
   );
 
   if (!h264.length) return;
 
   try {
-    transceiver.setCodecPreferences([
-      ...h264,
-      ...others
-    ]);
+    transceiver.setCodecPreferences([...h264, ...other]);
   } catch (e) {
-    console.warn("H264 preference:", e);
+    console.warn("H264 priority:", e);
   }
+}
+
+// ==================================================
+// CANVAS STREAM
+// ==================================================
+
+async function createCanvasStream(stream) {
+
+  const sourceVideo = document.createElement("video");
+
+  sourceVideo.srcObject = stream;
+  sourceVideo.muted = true;
+  sourceVideo.playsInline = true;
+
+  await sourceVideo.play();
+
+  const canvas = document.createElement("canvas");
+
+  canvas.width = 1280;
+  canvas.height = 720;
+
+  const ctx = canvas.getContext("2d", {
+    alpha: false
+  });
+
+  if (!ctx) {
+    throw new Error("Canvas 2Dを取得できません");
+  }
+
+  let running = true;
+  let frameCount = 0;
+  let lastTime = performance.now();
+
+  function draw() {
+
+    if (!running) return;
+
+    const sw = sourceVideo.videoWidth;
+    const sh = sourceVideo.videoHeight;
+
+    if (sw && sh) {
+
+      ctx.fillStyle = "black";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const scale = Math.min(
+        canvas.width / sw,
+        canvas.height / sh
+      );
+
+      const w = sw * scale;
+      const h = sh * scale;
+
+      ctx.drawImage(
+        sourceVideo,
+        (canvas.width - w) / 2,
+        (canvas.height - h) / 2,
+        w,
+        h
+      );
+
+      frameCount++;
+    }
+
+    const now = performance.now();
+
+    if (now - lastTime >= 1000) {
+      console.log("Canvas描画FPS:", frameCount);
+      frameCount = 0;
+      lastTime = now;
+    }
+
+    requestAnimationFrame(draw);
+  }
+
+  draw();
+
+  const output = canvas.captureStream(60);
+
+  for (const track of stream.getAudioTracks()) {
+    output.addTrack(track);
+  }
+
+  return {
+    stream: output,
+
+    stop() {
+      running = false;
+
+      output.getVideoTracks().forEach(t => t.stop());
+
+      sourceVideo.pause();
+      sourceVideo.srcObject = null;
+    }
+  };
 }
 
 // ==================================================
@@ -326,7 +438,9 @@ function effectiveQuality(receiverId) {
 function updateSettingsInfo() {
 
   $("settingsInfo").textContent =
-    "画質上限: " +
+    "処理方式: " +
+    $("renderMode").selectedOptions[0].text +
+    "\n画質上限: " +
     $("quality").selectedOptions[0].text +
     "\nFPS上限: " +
     (selectedFPS() ?? "指定なし") +
@@ -420,12 +534,10 @@ async function applySettings() {
       });
     }
 
-    if (localStream) {
-      const track = localStream.getVideoTracks()[0];
+    const track = localStream?.getVideoTracks()[0];
 
-      if (track) {
-        track.contentHint = $("contentHint").value;
-      }
+    if (track) {
+      track.contentHint = $("contentHint").value;
     }
 
     const errors = [];
@@ -570,7 +682,7 @@ function updateSenderInfo() {
     "接続中: " + connected +
     "台\nPeer数: " + senderPeers.size +
     "\n音声: " +
-    (localStream?.getAudioTracks().length ? "あり" : "なし");
+    (sourceStream?.getAudioTracks().length ? "あり" : "なし");
 }
 
 // ==================================================
@@ -759,20 +871,41 @@ $("sendButton").onclick = async () => {
 
     status("共有画面を選択してください...");
 
-    // FPSの上限を明示しない
-    localStream =
+    sourceStream =
       await navigator.mediaDevices.getDisplayMedia({
         video: true,
         audio: true
       });
 
+    if ($("renderMode").value === "canvas") {
+
+      status("Canvasストリームを生成中...");
+
+      canvasController =
+        await createCanvasStream(sourceStream);
+
+      localStream =
+        canvasController.stream;
+
+    } else {
+
+      localStream =
+        sourceStream;
+    }
+
     mode = "sender";
+
+    const sourceTrack =
+      sourceStream.getVideoTracks()[0];
+
+    if (sourceTrack) {
+      sourceTrack.onended = () => stop();
+    }
 
     const track = localStream.getVideoTracks()[0];
 
     if (track) {
       track.contentHint = $("contentHint").value;
-      track.onended = () => stop();
     }
 
     updateSettingsInfo();
@@ -809,12 +942,17 @@ function stop(showStatus = true) {
   socket?.close();
   socket = null;
 
-  localStream?.getTracks().forEach(track => {
+  canvasController?.stop();
+  canvasController = null;
+
+  sourceStream?.getTracks().forEach(track => {
     track.onended = null;
     track.stop();
   });
 
+  sourceStream = null;
   localStream = null;
+
   mode = null;
   video.srcObject = null;
 
@@ -1038,7 +1176,6 @@ async function updateReceiverStats() {
 // ==================================================
 
 function lowerQuality(height) {
-
   if (height === Infinity) return 1080;
 
   const lower = QUALITY_STEPS.filter(q => q < height);
@@ -1071,8 +1208,6 @@ async function adaptiveQuality(reports) {
 
   const targetFPS = selectedFPS();
 
-  // 制限なしならFPS目標がないため
-  // FPS連動の自動画質調整は実行しない
   if (!targetFPS) return;
 
   const now = Date.now();
@@ -1145,7 +1280,6 @@ async function adaptiveQuality(reports) {
       await configurePeer(id);
     } catch (e) {
       state.height = previous;
-      console.warn("Adaptive quality:", e);
     }
   }
 }
@@ -1234,7 +1368,6 @@ async function autoFPS(reports) {
 
   } catch (e) {
     currentFPS = previous;
-    console.warn("Auto FPS:", e);
   }
 }
 
