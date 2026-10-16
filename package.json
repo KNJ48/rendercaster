@@ -1,7 +1,8 @@
 {
   "name": "webrtc-caster",
-  "version": "11.0.0",
-  "private": true,
+  "version": "15.0.0",
+  "description": "WebRTC Caster 120FPS Test",
+  "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js"
