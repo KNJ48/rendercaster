@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 
-<title>WebRTC Caster v18</title>
+<title>WebRTC Caster v19</title>
 
 <style>
 * {
@@ -87,6 +87,10 @@ button:disabled {
 
 #fullscreen {
   background: #7544c7;
+}
+
+#applySettings {
+  background: #2868d8;
 }
 
 #status, .info {
@@ -185,9 +189,10 @@ small {
 
 <main>
 
-<h1>WebRTC Caster v18</h1>
+<h1>WebRTC Caster v19</h1>
+
 <small class="subtitle">
-Classic UI × Optimized WebRTC
+Classic UI × Live Reconnection
 </small>
 
 <div id="status">準備完了</div>
@@ -303,7 +308,7 @@ Classic UI × Optimized WebRTC
   </label>
 
   <button id="applySettings">
-    設定を適用
+    🔄 設定を適用・自動再接続
   </button>
 
   <div id="settingsInfo" class="info">
@@ -311,8 +316,9 @@ Classic UI × Optimized WebRTC
   </div>
 
   <div class="notice">
-    画質・FPS・品質優先度・ビットレートは配信中に変更できます。
-    コーデック変更は再接続後に反映されます。
+    配信中にコーデック・画質・FPSを変更できます。
+    受信側は自動的に再接続します。
+    音声共有のON/OFFは次回の画面共有開始時に反映されます。
   </div>
 </section>
 
@@ -360,12 +366,9 @@ Canvas：不使用
 Worker：不使用
 通信方式：WebRTC P2P
 シグナリング：WebSocket
+設定変更：WebRTC自動再接続
 最大帯域：20Mbps / 受信者（設定時）
   </div>
-
-  <small>
-    FPSや画質は端末性能・共有対象・通信状況によって変化します。
-  </small>
 </section>
 
 </main>
@@ -374,7 +377,7 @@ Worker：不使用
 "use strict";
 
 // ==================================================
-// BASIC STATE
+// 基本設定
 // ==================================================
 
 const $ = id => document.getElementById(id);
@@ -385,7 +388,6 @@ const previewVideo = $("previewVideo");
 const senderPeers = new Map();
 const pendingICE = new Map();
 const senderHistory = new Map();
-const peerQuality = new Map();
 
 let receiverPeer = null;
 let receiverHistory = null;
@@ -396,31 +398,24 @@ let localStream = null;
 
 let mode = null;
 let running = false;
-let sessionId = 0;
 
+let sessionId = 0;
+let reconnecting = false;
 let statsBusy = false;
-let settingsBusy = false;
+
+let appliedSettings = null;
 
 const MAX_BITRATE = 20_000_000;
 
-const QUALITY_STEPS = [
-  240, 360, 480, 540,
-  720, 1080, 1440, 2160
-];
-
 const rtcConfig = {
   iceServers: [
-    {
-      urls: "stun:stun.l.google.com:19302"
-    },
-    {
-      urls: "stun:stun1.l.google.com:19302"
-    }
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" }
   ]
 };
 
 // ==================================================
-// BASIC FUNCTIONS
+// 基本関数
 // ==================================================
 
 function status(text) {
@@ -443,7 +438,10 @@ function room() {
 function signal(data) {
   if (socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(data));
+    return true;
   }
+
+  return false;
 }
 
 function createPeer() {
@@ -479,57 +477,58 @@ function rate(current, previous, seconds) {
 }
 
 // ==================================================
-// SETTINGS
+// 設定取得
 // ==================================================
 
-function maxQuality() {
-  return $("quality").value === "native"
-    ? Infinity
-    : Number($("quality").value);
+function getSettings() {
+  return {
+    quality: $("quality").value,
+    fpsMode: $("fpsMode").value,
+    priority: $("priority").value,
+    codec: $("codecMode").value,
+    bitrate: $("bitrateMode").value,
+    audio: $("shareAudio").checked
+  };
 }
 
-function selectedFPS() {
-  const value = $("fpsMode").value;
-
+function captureFPS(settings) {
   if (
-    value === "browser" ||
-    value === "auto"
+    settings.fpsMode === "auto" ||
+    settings.fpsMode === "browser"
   ) {
-    return null;
+    return 60;
   }
 
-  return Number(value);
+  return Number(settings.fpsMode);
 }
 
-function requestedCaptureFPS() {
-  const fps = selectedFPS();
-
-  return fps === null ? 60 : fps;
+function maxHeight(settings) {
+  return settings.quality === "native"
+    ? Infinity
+    : Number(settings.quality);
 }
 
 function updateSettingsInfo() {
+  const settings = getSettings();
+
   $("settingsInfo").textContent =
-    "最大画質: " +
-    $("quality").selectedOptions[0].text +
-    "\nFPS: " +
-    $("fpsMode").selectedOptions[0].text +
-    "\n品質優先: " +
-    $("priority").selectedOptions[0].text +
-    "\nコーデック: " +
-    $("codecMode").selectedOptions[0].text +
+    "最大画質: " + settings.quality +
+    "\nFPS: " + settings.fpsMode +
+    "\n優先度: " + settings.priority +
+    "\nコーデック: " + settings.codec +
     "\nビットレート: " +
-    $("bitrateMode").selectedOptions[0].text +
-    "\n映像処理: ブラウザ標準";
+    (settings.bitrate === "auto"
+      ? "ブラウザ自動"
+      : "最大20Mbps") +
+    "\n適用方式: WebRTC自動再接続";
 }
 
 // ==================================================
-// CODEC
+// コーデック設定
 // ==================================================
 
-function applyCodecPreferences(pc) {
-  const mode = $("codecMode").value;
-
-  if (mode === "auto") return;
+function applyCodecPreferences(pc, codecMode) {
+  if (codecMode === "auto") return;
 
   const transceiver =
     pc.getTransceivers().find(t =>
@@ -537,6 +536,7 @@ function applyCodecPreferences(pc) {
     );
 
   if (!transceiver?.setCodecPreferences) {
+    console.warn("コーデック優先設定に非対応");
     return;
   }
 
@@ -546,7 +546,7 @@ function applyCodecPreferences(pc) {
   if (!capabilities?.codecs) return;
 
   const mime =
-    mode === "h264"
+    codecMode === "h264"
       ? "video/h264"
       : "video/vp8";
 
@@ -555,7 +555,7 @@ function applyCodecPreferences(pc) {
   );
 
   if (!preferred.length) {
-    console.warn("Codec unsupported:", mime);
+    console.warn("コーデック非対応:", mime);
     return;
   }
 
@@ -563,75 +563,25 @@ function applyCodecPreferences(pc) {
     c.mimeType.toLowerCase() !== mime
   );
 
-  try {
-    transceiver.setCodecPreferences([
-      ...preferred,
-      ...others
-    ]);
-  } catch (err) {
-    console.warn("Codec preference:", err);
-  }
+  transceiver.setCodecPreferences([
+    ...preferred,
+    ...others
+  ]);
 }
 
 // ==================================================
-// PREVIEW
+// 送信パラメータ
 // ==================================================
 
-function updatePreview() {
-  const show =
-    running &&
-    mode === "sender" &&
-    $("showPreview").checked &&
-    !!localStream;
-
-  if (show) {
-    previewVideo.classList.remove("hidden");
-
-    if (previewVideo.srcObject !== localStream) {
-      previewVideo.srcObject = localStream;
-    }
-
-    previewVideo.play().catch(console.warn);
-  } else {
-    previewVideo.pause();
-    previewVideo.srcObject = null;
-    previewVideo.classList.add("hidden");
-  }
-}
-
-$("showPreview").addEventListener(
-  "change",
-  updatePreview
-);
-
-// ==================================================
-// SENDER PARAMETERS
-// ==================================================
-
-function getPeerTargetHeight(id) {
-  const maximum = maxQuality();
-
-  if ($("priority").value !== "maintain-framerate") {
-    return maximum;
-  }
-
-  const state = peerQuality.get(id);
-
-  return Math.min(
-    maximum,
-    state?.height ?? maximum
-  );
-}
-
-async function configureSender(sender, id) {
+async function configureSender(sender, settings) {
   if (sender.track?.kind !== "video") return;
 
-  const settings = sender.track.getSettings();
+  const source = sender.track.getSettings();
 
-  const width = settings.width || 1280;
-  const height = settings.height || 720;
+  const width = source.width || 1280;
+  const height = source.height || 720;
 
-  const targetHeight = getPeerTargetHeight(id);
+  const targetHeight = maxHeight(settings);
 
   let scale = 1;
 
@@ -653,95 +603,112 @@ async function configureSender(sender, id) {
 
   encoding.scaleResolutionDownBy = scale;
 
-  if ($("bitrateMode").value === "auto") {
+  if (settings.bitrate === "auto") {
     delete encoding.maxBitrate;
   } else {
     encoding.maxBitrate = MAX_BITRATE;
   }
 
-  const fps = selectedFPS();
-
-  if (fps === null) {
+  if (
+    settings.fpsMode === "auto" ||
+    settings.fpsMode === "browser"
+  ) {
     delete encoding.maxFramerate;
   } else {
-    encoding.maxFramerate = fps;
+    encoding.maxFramerate =
+      Number(settings.fpsMode);
   }
 
   params.degradationPreference =
-    $("priority").value;
+    settings.priority;
 
   await sender.setParameters(params);
 }
 
-async function configurePeer(id) {
-  const pc = senderPeers.get(id);
+// ==================================================
+// キャプチャ設定変更
+// ==================================================
 
-  if (!pc) return;
+async function updateCaptureConstraints(settings) {
+  const track = localStream?.getVideoTracks()[0];
 
-  for (const sender of pc.getSenders()) {
-    if (sender.track?.kind === "video") {
-      await configureSender(sender, id);
+  if (!track) return;
+
+  const fps = captureFPS(settings);
+
+  const constraints = {
+    frameRate: {
+      ideal: fps
     }
-  }
-}
-
-function createQualityState() {
-  return {
-    height: maxQuality(),
-    lastChange: Date.now(),
-    pendingTest: null,
-    disabled: false
   };
-}
 
-async function applySettings() {
-  if (settingsBusy) return;
+  const height = maxHeight(settings);
 
-  settingsBusy = true;
-  $("applySettings").disabled = true;
+  if (Number.isFinite(height)) {
+    constraints.height = {
+      ideal: height
+    };
+
+    constraints.width = {
+      ideal: Math.round(height * 16 / 9)
+    };
+  }
 
   try {
-    for (const id of senderPeers.keys()) {
-      peerQuality.set(id, createQualityState());
-    }
+    await track.applyConstraints(constraints);
 
-    const errors = [];
-
-    for (const id of senderPeers.keys()) {
-      try {
-        await configurePeer(id);
-      } catch (err) {
-        errors.push(err.message);
-      }
-    }
-
-    updateSettingsInfo();
-
-    status(
-      errors.length
-        ? "一部の設定変更に失敗:\n" +
-          errors.join("\n")
-        : "配信設定を更新しました"
+    console.log(
+      "Updated capture settings:",
+      track.getSettings()
     );
 
-  } finally {
-    settingsBusy = false;
-    $("applySettings").disabled = false;
+  } catch (err) {
+    console.warn(
+      "キャプチャ制約変更失敗:",
+      err
+    );
+
+    status(
+      "キャプチャ制約の変更に失敗しました。\n" +
+      "WebRTC側の設定変更を続行します。"
+    );
   }
 }
 
-$("applySettings").addEventListener(
-  "click",
-  () => {
-    applySettings().catch(err => {
-      console.error(err);
-      status("設定エラー: " + err.message);
-    });
+// ==================================================
+// プレビュー
+// ==================================================
+
+function updatePreview() {
+  const show =
+    running &&
+    mode === "sender" &&
+    $("showPreview").checked &&
+    !!localStream;
+
+  if (show) {
+    previewVideo.classList.remove("hidden");
+
+    if (previewVideo.srcObject !== localStream) {
+      previewVideo.srcObject = localStream;
+    }
+
+    previewVideo.play().catch(console.warn);
+
+  } else {
+    previewVideo.pause();
+    previewVideo.srcObject = null;
+    previewVideo.classList.add("hidden");
   }
+}
+
+$("showPreview").addEventListener(
+  "change",
+  updatePreview
 );
 
 // ==================================================
-// WEBSOCKET
+// WebSocket
 // ==================================================
 
 function connectSocket() {
@@ -760,8 +727,12 @@ function connectSocket() {
     let settled = false;
 
     ws.onopen = () => {
-      if (socket !== ws || !running) {
+      if (!running || socket !== ws) {
         ws.close();
+        if (!settled) {
+          settled = true;
+          reject(new Error("接続が中断されました"));
+        }
         return;
       }
 
@@ -788,24 +759,33 @@ function connectSocket() {
       }
     };
 
-    ws.onmessage = async event => {
-      if (!running || socket !== ws) return;
+    // シグナリングメッセージを順番に処理
+    let queue = Promise.resolve();
 
-      try {
-        await handleSignal(JSON.parse(event.data));
-      } catch (err) {
-        console.error(err);
-        status("通信エラー: " + err.message);
-      }
+    ws.onmessage = event => {
+      queue = queue.then(async () => {
+        if (!running || socket !== ws) return;
+
+        const msg = JSON.parse(event.data);
+
+        await handleSignal(msg);
+
+      }).catch(err => {
+        console.error("Signal error:", err);
+
+        if (running && socket === ws) {
+          status("通信エラー: " + err.message);
+        }
+      });
     };
   });
 }
 
 // ==================================================
-// SENDER PEER
+// 送信側PeerConnection
 // ==================================================
 
-async function createSenderPeer(id) {
+async function createSenderPeer(id, settings) {
   if (!running || !localStream) return;
 
   closeSenderPeer(id);
@@ -813,11 +793,10 @@ async function createSenderPeer(id) {
   const pc = createPeer();
 
   senderPeers.set(id, pc);
-  peerQuality.set(id, createQualityState());
   pendingICE.set(id, []);
 
   pc.onicecandidate = event => {
-    if (event.candidate) {
+    if (event.candidate && senderPeers.get(id) === pc) {
       signal({
         type: "ice",
         receiverId: id,
@@ -827,10 +806,16 @@ async function createSenderPeer(id) {
   };
 
   pc.onconnectionstatechange = () => {
+    if (senderPeers.get(id) !== pc) return;
+
     updateSenderInfo();
 
     if (pc.connectionState === "connected") {
       status("受信端末と接続しました");
+    }
+
+    if (pc.connectionState === "failed") {
+      status("受信端末との接続に失敗しました");
     }
   };
 
@@ -843,14 +828,18 @@ async function createSenderPeer(id) {
 
       if (track.kind === "video") {
         try {
-          await configureSender(sender, id);
+          await configureSender(sender, settings);
         } catch (err) {
-          console.warn("Sender parameters:", err);
+          console.warn("映像設定:", err);
         }
       }
     }
 
-    applyCodecPreferences(pc);
+    if (!running || senderPeers.get(id) !== pc) {
+      return;
+    }
+
+    applyCodecPreferences(pc, settings.codec);
 
     const offer = await pc.createOffer();
 
@@ -859,6 +848,10 @@ async function createSenderPeer(id) {
     }
 
     await pc.setLocalDescription(offer);
+
+    if (!running || senderPeers.get(id) !== pc) {
+      return;
+    }
 
     signal({
       type: "offer",
@@ -869,7 +862,10 @@ async function createSenderPeer(id) {
     updateSenderInfo();
 
   } catch (err) {
-    closeSenderPeer(id);
+    if (senderPeers.get(id) === pc) {
+      closeSenderPeer(id);
+    }
+
     throw err;
   }
 }
@@ -880,7 +876,6 @@ function closeSenderPeer(id) {
   senderPeers.delete(id);
   pendingICE.delete(id);
   senderHistory.delete(id);
-  peerQuality.delete(id);
 
   updateSenderInfo();
 }
@@ -901,12 +896,14 @@ function updateSenderInfo() {
         "\n音声: " +
         (localStream?.getAudioTracks().length
           ? "あり"
-          : "なし")
+          : "なし") +
+        "\n再接続処理: " +
+        (reconnecting ? "実行中" : "待機")
       : "未送信";
 }
 
 // ==================================================
-// RECEIVER PEER
+// 受信側PeerConnection
 // ==================================================
 
 function closeReceiverPeer() {
@@ -923,6 +920,8 @@ function closeReceiverPeer() {
 }
 
 async function handleOffer(msg) {
+  status("配信設定変更・自動再接続中...");
+
   const earlyICE = pendingReceiverICE;
 
   closeReceiverPeer();
@@ -930,10 +929,11 @@ async function handleOffer(msg) {
   pendingReceiverICE = earlyICE;
 
   const pc = createPeer();
+
   receiverPeer = pc;
 
   pc.onicecandidate = event => {
-    if (event.candidate) {
+    if (event.candidate && receiverPeer === pc) {
       signal({
         type: "ice",
         candidate: event.candidate
@@ -942,10 +942,11 @@ async function handleOffer(msg) {
   };
 
   pc.ontrack = event => {
-    if (pc !== receiverPeer) return;
+    if (receiverPeer !== pc) return;
 
     if (event.streams?.[0]) {
       video.srcObject = event.streams[0];
+
     } else {
       let stream = video.srcObject;
 
@@ -963,18 +964,20 @@ async function handleOffer(msg) {
   };
 
   pc.onconnectionstatechange = () => {
-    if (pc !== receiverPeer) return;
+    if (receiverPeer !== pc) return;
 
     if (pc.connectionState === "connected") {
       status("接続成功！ 映像受信中");
     }
 
     if (pc.connectionState === "failed") {
-      status("WebRTC接続失敗");
+      status("WebRTC再接続失敗");
     }
   };
 
   await pc.setRemoteDescription(msg.sdp);
+
+  if (receiverPeer !== pc) return;
 
   for (const candidate of pendingReceiverICE) {
     try {
@@ -987,94 +990,15 @@ async function handleOffer(msg) {
   pendingReceiverICE = [];
 
   const answer = await pc.createAnswer();
+
   await pc.setLocalDescription(answer);
+
+  if (receiverPeer !== pc) return;
 
   signal({
     type: "answer",
     sdp: pc.localDescription
   });
-}
-
-// ==================================================
-// SIGNAL HANDLER
-// ==================================================
-
-async function handleSignal(msg) {
-  switch (msg.type) {
-    case "joined":
-      status(
-        mode === "sender"
-          ? "送信準備完了。受信者を待っています。"
-          : "受信準備完了。送信者を待っています。"
-      );
-      break;
-
-    case "sender-ready":
-      if (mode === "receiver") {
-        status("送信者を検出。接続待機中...");
-      }
-      break;
-
-    case "receiver-joined":
-      if (mode === "sender") {
-        await createSenderPeer(msg.receiverId);
-      }
-      break;
-
-    case "receiver-left":
-      if (mode === "sender") {
-        closeSenderPeer(msg.receiverId);
-      }
-      break;
-
-    case "sender-left":
-      if (mode === "receiver") {
-        closeReceiverPeer();
-        status("送信者が退出しました");
-      }
-      break;
-
-    case "offer":
-      if (mode === "receiver") {
-        await handleOffer(msg);
-      }
-      break;
-
-    case "answer":
-      if (mode === "sender") {
-        const pc = senderPeers.get(msg.receiverId);
-
-        if (
-          pc &&
-          pc.signalingState === "have-local-offer"
-        ) {
-          await pc.setRemoteDescription(msg.sdp);
-
-          const candidates =
-            pendingICE.get(msg.receiverId) || [];
-
-          pendingICE.set(msg.receiverId, []);
-
-          for (const candidate of candidates) {
-            try {
-              await pc.addIceCandidate(candidate);
-            } catch (err) {
-              console.warn("ICE:", err);
-            }
-          }
-        }
-      }
-      break;
-
-    case "ice":
-      await handleICE(msg);
-      break;
-
-    case "error":
-      status("サーバーエラー: " + msg.message);
-      stop(false);
-      break;
-  }
 }
 
 // ==================================================
@@ -1107,9 +1031,7 @@ async function handleICE(msg) {
   } else if (mode === "receiver") {
     if (receiverPeer?.remoteDescription) {
       try {
-        await receiverPeer.addIceCandidate(
-          msg.candidate
-        );
+        await receiverPeer.addIceCandidate(msg.candidate);
       } catch (err) {
         console.warn("ICE:", err);
       }
@@ -1119,8 +1041,180 @@ async function handleICE(msg) {
   }
 }
 
+async function flushSenderICE(id, pc) {
+  const candidates = pendingICE.get(id) || [];
+
+  pendingICE.set(id, []);
+
+  for (const candidate of candidates) {
+    try {
+      await pc.addIceCandidate(candidate);
+    } catch (err) {
+      console.warn("ICE:", err);
+    }
+  }
+}
+
 // ==================================================
-// START SENDER
+// シグナリング
+// ==================================================
+
+async function handleSignal(msg) {
+  switch (msg.type) {
+    case "joined":
+      status(
+        mode === "sender"
+          ? "送信準備完了。受信者を待っています。"
+          : "受信準備完了。送信者を待っています。"
+      );
+      break;
+
+    case "sender-ready":
+      if (mode === "receiver") {
+        status("送信者を検出。接続待機中...");
+      }
+      break;
+
+    case "receiver-joined":
+      if (mode === "sender") {
+        await createSenderPeer(
+          msg.receiverId,
+          appliedSettings || getSettings()
+        );
+      }
+      break;
+
+    case "receiver-left":
+      if (mode === "sender") {
+        closeSenderPeer(msg.receiverId);
+      }
+      break;
+
+    case "sender-left":
+      if (mode === "receiver") {
+        closeReceiverPeer();
+        status("送信者が退出しました");
+      }
+      break;
+
+    case "offer":
+      if (mode === "receiver") {
+        await handleOffer(msg);
+      }
+      break;
+
+    case "answer":
+      if (mode === "sender") {
+        const pc = senderPeers.get(msg.receiverId);
+
+        if (
+          pc &&
+          pc.signalingState === "have-local-offer"
+        ) {
+          await pc.setRemoteDescription(msg.sdp);
+
+          await flushSenderICE(msg.receiverId, pc);
+        }
+      }
+      break;
+
+    case "ice":
+      await handleICE(msg);
+      break;
+
+    case "error":
+      status("サーバーエラー: " + msg.message);
+      stop(false);
+      break;
+  }
+}
+
+// ==================================================
+// ライブ設定変更・自動再接続
+// ==================================================
+
+async function applySettings() {
+  if (reconnecting) return;
+
+  const settings = getSettings();
+
+  updateSettingsInfo();
+
+  if (!running || mode !== "sender") {
+    appliedSettings = settings;
+    status("設定を保存しました");
+    return;
+  }
+
+  reconnecting = true;
+
+  $("applySettings").disabled = true;
+
+  updateSenderInfo();
+
+  try {
+    status("キャプチャ設定を更新中...");
+
+    await updateCaptureConstraints(settings);
+
+    if (!running || mode !== "sender") return;
+
+    status("WebRTC接続を再生成しています...");
+
+    appliedSettings = settings;
+
+    const receiverIds = [...senderPeers.keys()];
+
+    for (const id of receiverIds) {
+      closeSenderPeer(id);
+    }
+
+    for (const id of receiverIds) {
+      if (!running || mode !== "sender") break;
+
+      try {
+        await createSenderPeer(id, settings);
+      } catch (err) {
+        console.error("再接続失敗:", id, err);
+      }
+    }
+
+    if (running && mode === "sender") {
+      status(
+        receiverIds.length
+          ? "設定を更新しました。受信側の接続完了を待っています..."
+          : "設定を更新しました。受信者待機中..."
+      );
+    }
+
+  } catch (err) {
+    console.error(err);
+
+    status(
+      "設定変更エラー:\n" + err.message
+    );
+
+  } finally {
+    reconnecting = false;
+
+    $("applySettings").disabled = false;
+
+    updateSenderInfo();
+  }
+}
+
+$("applySettings").addEventListener(
+  "click",
+  () => {
+    applySettings().catch(err => {
+      console.error(err);
+      status("設定エラー: " + err.message);
+    });
+  }
+);
+
+// ==================================================
+// 送信開始
 // ==================================================
 
 $("sendButton").addEventListener(
@@ -1147,16 +1241,32 @@ $("sendButton").addEventListener(
 
       status("共有する画面を選択してください...");
 
-      const fps = requestedCaptureFPS();
+      const settings = getSettings();
+
+      appliedSettings = settings;
+
+      const constraints = {
+        frameRate: {
+          ideal: captureFPS(settings)
+        }
+      };
+
+      const height = maxHeight(settings);
+
+      if (Number.isFinite(height)) {
+        constraints.width = {
+          ideal: Math.round(height * 16 / 9)
+        };
+
+        constraints.height = {
+          ideal: height
+        };
+      }
 
       stream =
         await navigator.mediaDevices.getDisplayMedia({
-          video: {
-            frameRate: {
-              ideal: fps
-            }
-          },
-          audio: $("shareAudio").checked
+          video: constraints,
+          audio: settings.audio
         });
 
       if (token !== sessionId) {
@@ -1205,7 +1315,7 @@ $("sendButton").addEventListener(
 );
 
 // ==================================================
-// START RECEIVER
+// 受信開始
 // ==================================================
 
 $("receiveButton").addEventListener(
@@ -1252,13 +1362,14 @@ $("receiveButton").addEventListener(
 );
 
 // ==================================================
-// STOP
+// 停止
 // ==================================================
 
 function stop(showStatus = true) {
   ++sessionId;
 
   running = false;
+  reconnecting = false;
 
   for (const id of [...senderPeers.keys()]) {
     closeSenderPeer(id);
@@ -1278,15 +1389,17 @@ function stop(showStatus = true) {
   localStream = null;
   mode = null;
 
+  appliedSettings = null;
+
   pendingICE.clear();
   senderHistory.clear();
-  peerQuality.clear();
 
   updatePreview();
   updateSenderInfo();
 
   $("sendButton").disabled = false;
   $("receiveButton").disabled = false;
+  $("applySettings").disabled = false;
   $("room").disabled = false;
 
   video.muted = true;
@@ -1311,7 +1424,7 @@ $("stopButton").addEventListener(
 );
 
 // ==================================================
-// FULLSCREEN
+// 全画面
 // ==================================================
 
 $("fullscreen").addEventListener(
@@ -1335,7 +1448,7 @@ $("fullscreen").addEventListener(
 );
 
 // ==================================================
-// AUDIO
+// 音声
 // ==================================================
 
 $("muteButton").addEventListener(
@@ -1347,11 +1460,15 @@ $("muteButton").addEventListener(
       video.muted
         ? "🔇 ミュート中"
         : "🔊 音声ON";
+
+    if (!video.muted) {
+      video.play().catch(console.warn);
+    }
   }
 );
 
 // ==================================================
-// STATS HELPERS
+// 統計補助
 // ==================================================
 
 function getVideoReport(stats, type) {
@@ -1375,7 +1492,7 @@ function codecName(stats, report) {
   return stats.get(report.codecId)?.mimeType || "不明";
 }
 
-function getConnectionInfo(stats) {
+function connectionInfo(stats) {
   let pair = null;
 
   for (const report of stats.values()) {
@@ -1383,9 +1500,8 @@ function getConnectionInfo(stats) {
       report.type === "transport" &&
       report.selectedCandidatePairId
     ) {
-      pair = stats.get(
-        report.selectedCandidatePairId
-      );
+      pair = stats.get(report.selectedCandidatePairId);
+
       if (pair) break;
     }
   }
@@ -1418,9 +1534,7 @@ function getConnectionInfo(stats) {
     );
   }
 
-  if (
-    typeof pair.availableOutgoingBitrate === "number"
-  ) {
+  if (typeof pair.availableOutgoingBitrate === "number") {
     lines.push(
       "推定送信帯域: " +
       fmt(pair.availableOutgoingBitrate / 1e6, 2) +
@@ -1448,14 +1562,13 @@ function getConnectionInfo(stats) {
 }
 
 // ==================================================
-// SENDER STATS
+// 送信統計
 // ==================================================
 
 async function updateSenderStats() {
-  if (mode !== "sender") return [];
+  if (mode !== "sender") return;
 
   const lines = [];
-  const reports = [];
 
   const track = localStream?.getVideoTracks()[0];
 
@@ -1488,19 +1601,18 @@ async function updateSenderStats() {
 
       const old = senderHistory.get(id);
 
-      const seconds = old
+      const same =
+        old && old.id === report.id;
+
+      const seconds = same
         ? (report.timestamp - old.timestamp) / 1000
         : 0;
 
-      const mbps = old
-        ? rate(
-            report.bytesSent,
-            old.bytes,
-            seconds
-          )
+      const mbps = same
+        ? rate(report.bytesSent, old.bytes, seconds)
         : null;
 
-      const encodedFPS = old
+      const encodedFPS = same
         ? rate(
             report.framesEncoded,
             old.framesEncoded,
@@ -1511,7 +1623,7 @@ async function updateSenderStats() {
       let encodeMs = null;
 
       if (
-        old &&
+        same &&
         typeof report.totalEncodeTime === "number" &&
         typeof old.totalEncodeTime === "number"
       ) {
@@ -1535,8 +1647,6 @@ async function updateSenderStats() {
         totalEncodeTime: report.totalEncodeTime
       });
 
-      const state = peerQuality.get(id);
-
       lines.push(
         "\n【送信先 " + id.slice(0, 8) + "】" +
         "\n状態: " + pc.connectionState +
@@ -1557,27 +1667,9 @@ async function updateSenderStats() {
         " ms" +
         "\n品質制限理由: " +
         (report.qualityLimitationReason || "不明") +
-        "\n自動画質目標: " +
-        (
-          state?.height === Infinity
-            ? "元画質"
-            : (state?.height ?? "?") + "p"
-        ) +
-        (
-          state?.disabled
-            ? "（自動調整停止）"
-            : ""
-        ) +
         "\n" +
-        getConnectionInfo(stats)
+        connectionInfo(stats)
       );
-
-      reports.push({
-        id,
-        pc,
-        report,
-        encodedFPS
-      });
 
     } catch (err) {
       console.warn("Sender stats:", err);
@@ -1586,12 +1678,10 @@ async function updateSenderStats() {
 
   $("senderStats").textContent =
     lines.join("\n") || "接続端末なし";
-
-  return reports;
 }
 
 // ==================================================
-// RECEIVER STATS
+// 受信統計
 // ==================================================
 
 async function updateReceiverStats() {
@@ -1604,7 +1694,11 @@ async function updateReceiverStats() {
   }
 
   try {
-    const stats = await receiverPeer.getStats();
+    const pc = receiverPeer;
+
+    const stats = await pc.getStats();
+
+    if (pc !== receiverPeer) return;
 
     const report =
       getVideoReport(stats, "inbound-rtp");
@@ -1613,19 +1707,18 @@ async function updateReceiverStats() {
 
     const old = receiverHistory;
 
-    const seconds = old
+    const same =
+      old && old.id === report.id;
+
+    const seconds = same
       ? (report.timestamp - old.timestamp) / 1000
       : 0;
 
-    const mbps = old
-      ? rate(
-          report.bytesReceived,
-          old.bytes,
-          seconds
-        )
+    const mbps = same
+      ? rate(report.bytesReceived, old.bytes, seconds)
       : null;
 
-    const receivedFPS = old
+    const receivedFPS = same
       ? rate(
           report.framesReceived,
           old.framesReceived,
@@ -1633,7 +1726,7 @@ async function updateReceiverStats() {
         )
       : null;
 
-    const decodedFPS = old
+    const decodedFPS = same
       ? rate(
           report.framesDecoded,
           old.framesDecoded,
@@ -1642,6 +1735,7 @@ async function updateReceiverStats() {
       : null;
 
     receiverHistory = {
+      id: report.id,
       timestamp: report.timestamp,
       bytes: report.bytesReceived,
       framesReceived: report.framesReceived,
@@ -1650,7 +1744,7 @@ async function updateReceiverStats() {
 
     $("receiverStats").textContent =
       "【実測受信】" +
-      "\n状態: " + receiverPeer.connectionState +
+      "\n状態: " + pc.connectionState +
       "\n解像度: " +
       (report.frameWidth || video.videoWidth || "?") +
       "×" +
@@ -1673,7 +1767,7 @@ async function updateReceiverStats() {
       "\nパケットロス: " +
       (report.packetsLost ?? "?") +
       "\n" +
-      getConnectionInfo(stats);
+      connectionInfo(stats);
 
   } catch (err) {
     console.warn("Receiver stats:", err);
@@ -1681,127 +1775,7 @@ async function updateReceiverStats() {
 }
 
 // ==================================================
-// FPS-BASED ADAPTIVE QUALITY
-// ==================================================
-
-function lowerQuality(height) {
-  if (height === Infinity) {
-    return 1080;
-  }
-
-  const lower =
-    QUALITY_STEPS.filter(q => q < height);
-
-  return lower.length
-    ? lower[lower.length - 1]
-    : height;
-}
-
-async function adaptiveQuality(reports) {
-  if (
-    mode !== "sender" ||
-    settingsBusy ||
-    $("priority").value !== "maintain-framerate"
-  ) {
-    return;
-  }
-
-  const targetFPS = selectedFPS();
-
-  if (!targetFPS || targetFPS <= 15) return;
-
-  const now = Date.now();
-
-  for (const item of reports) {
-    const {
-      id,
-      pc,
-      encodedFPS
-    } = item;
-
-    const state = peerQuality.get(id);
-
-    if (
-      !state ||
-      state.disabled ||
-      pc.connectionState !== "connected" ||
-      encodedFPS === null
-    ) {
-      continue;
-    }
-
-    if (state.pendingTest) {
-      const test = state.pendingTest;
-
-      if (now - test.start < 6000) {
-        continue;
-      }
-
-      const improvement =
-        encodedFPS - test.beforeFPS;
-
-      state.pendingTest = null;
-
-      if (improvement < 3) {
-        state.height = test.previousHeight;
-        state.disabled = true;
-
-        try {
-          await configurePeer(id);
-        } catch (err) {
-          console.warn("Quality rollback:", err);
-        }
-
-        console.log(
-          "画質を下げてもFPS改善なし。自動調整停止:",
-          id
-        );
-      }
-
-      state.lastChange = now;
-      continue;
-    }
-
-    if (now - state.lastChange < 10000) {
-      continue;
-    }
-
-    if (encodedFPS >= targetFPS - 5) {
-      continue;
-    }
-
-    const next = lowerQuality(state.height);
-
-    if (next === state.height) {
-      state.disabled = true;
-      continue;
-    }
-
-    const previousHeight = state.height;
-
-    state.height = next;
-    state.lastChange = now;
-
-    try {
-      await configurePeer(id);
-
-      state.pendingTest = {
-        previousHeight,
-        beforeFPS: encodedFPS,
-        start: now
-      };
-
-    } catch (err) {
-      state.height = previousHeight;
-      state.disabled = true;
-
-      console.warn("Adaptive quality:", err);
-    }
-  }
-}
-
-// ==================================================
-// TIMER
+// 統計タイマー
 // ==================================================
 
 setInterval(async () => {
@@ -1811,8 +1785,7 @@ setInterval(async () => {
 
   try {
     if (mode === "sender") {
-      const reports = await updateSenderStats();
-      await adaptiveQuality(reports);
+      await updateSenderStats();
     }
 
     if (mode === "receiver") {
