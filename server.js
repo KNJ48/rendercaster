@@ -1,7 +1,7 @@
 import express from "express";
-import { WebSocketServer, WebSocket } from "ws";
 import http from "http";
 import crypto from "crypto";
+import { WebSocketServer, WebSocket } from "ws";
 
 const app = express();
 const server = http.createServer(app);
@@ -9,221 +9,216 @@ const server = http.createServer(app);
 const PORT = process.env.PORT || 10000;
 
 app.get("/", (req, res) => {
-    res.sendFile("index.html", {
-        root: process.cwd()
-    });
+  res.sendFile("index.html", {
+    root: process.cwd()
+  });
 });
 
 const wss = new WebSocketServer({
-    server,
-    path: "/signal"
+  server,
+  path: "/signal",
+  maxPayload: 1024 * 1024
 });
 
 const rooms = new Map();
 
 function send(ws, data) {
-    if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(data));
-    }
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(data));
+  }
 }
 
 function getRoom(id) {
-    if (!rooms.has(id)) {
-        rooms.set(id, {
-            sender: null,
-            receivers: new Map()
-        });
-    }
+  if (!rooms.has(id)) {
+    rooms.set(id, {
+      sender: null,
+      receivers: new Map()
+    });
+  }
 
-    return rooms.get(id);
+  return rooms.get(id);
 }
 
 function cleanup(ws) {
-    const roomId = ws.roomId;
-    const role = ws.role;
+  if (!ws.roomId) return;
 
-    if (!roomId) return;
+  const room = rooms.get(ws.roomId);
 
-    const room = rooms.get(roomId);
-
-    if (!room) return;
-
-    if (role === "sender" && room.sender === ws) {
-
-        room.sender = null;
-
-        for (const receiver of room.receivers.values()) {
-            send(receiver, {
-                type: "sender-left"
-            });
-        }
-
-    } else if (role === "receiver") {
-
-        room.receivers.delete(ws.clientId);
-
-        send(room.sender, {
-            type: "receiver-left",
-            receiverId: ws.clientId
-        });
-    }
-
-    if (!room.sender && room.receivers.size === 0) {
-        rooms.delete(roomId);
-    }
-
+  if (!room) {
     ws.roomId = null;
     ws.role = null;
+    return;
+  }
+
+  if (ws.role === "sender" && room.sender === ws) {
+    room.sender = null;
+
+    for (const receiver of room.receivers.values()) {
+      send(receiver, {
+        type: "sender-left"
+      });
+    }
+  }
+
+  if (ws.role === "receiver") {
+    if (room.receivers.get(ws.clientId) === ws) {
+      room.receivers.delete(ws.clientId);
+
+      send(room.sender, {
+        type: "receiver-left",
+        receiverId: ws.clientId
+      });
+    }
+  }
+
+  if (!room.sender && room.receivers.size === 0) {
+    rooms.delete(ws.roomId);
+  }
+
+  ws.roomId = null;
+  ws.role = null;
 }
 
 wss.on("connection", ws => {
+  ws.clientId = crypto.randomUUID();
+  ws.roomId = null;
+  ws.role = null;
 
-    ws.clientId = crypto.randomUUID();
-    ws.roomId = null;
-    ws.role = null;
+  ws.on("message", raw => {
+    let data;
 
-    ws.on("message", raw => {
+    try {
+      data = JSON.parse(raw.toString());
+    } catch {
+      return;
+    }
 
-        let data;
+    if (data.type === "join") {
+      cleanup(ws);
 
-        try {
-            data = JSON.parse(raw.toString());
-        } catch {
-            return;
+      const roomId = String(data.roomId || "").trim();
+      const role = data.role;
+
+      if (
+        !/^[A-Za-z0-9_-]{1,32}$/.test(roomId) ||
+        !["sender", "receiver"].includes(role)
+      ) {
+        send(ws, {
+          type: "error",
+          message: "ルームIDまたは役割が無効です"
+        });
+        return;
+      }
+
+      const room = getRoom(roomId);
+
+      if (role === "sender") {
+        if (room.sender && room.sender !== ws) {
+          send(ws, {
+            type: "error",
+            message: "このルームには既に送信者がいます"
+          });
+          return;
         }
 
-        if (data.type === "join") {
+        room.sender = ws;
+        ws.roomId = roomId;
+        ws.role = "sender";
 
-            cleanup(ws);
+        send(ws, {
+          type: "joined",
+          role: "sender"
+        });
 
-            const roomId = String(data.roomId || "").trim();
+        for (const [id, receiver] of room.receivers) {
+          send(ws, {
+            type: "receiver-joined",
+            receiverId: id
+          });
 
-            if (!roomId || roomId.length > 64) {
-                send(ws, {
-                    type: "error",
-                    message: "ルームIDが無効です"
-                });
-                return;
-            }
-
-            if (!["sender", "receiver"].includes(data.role)) {
-                return;
-            }
-
-            const room = getRoom(roomId);
-
-            if (data.role === "sender") {
-
-                if (room.sender && room.sender !== ws) {
-                    send(ws, {
-                        type: "error",
-                        message: "このルームには既に送信者がいます"
-                    });
-                    return;
-                }
-
-                room.sender = ws;
-
-                ws.roomId = roomId;
-                ws.role = "sender";
-
-                send(ws, {
-                    type: "joined",
-                    role: "sender"
-                });
-
-                for (const [id, receiver] of room.receivers) {
-                    send(ws, {
-                        type: "receiver-joined",
-                        receiverId: id
-                    });
-
-                    send(receiver, {
-                        type: "sender-ready"
-                    });
-                }
-
-            } else {
-
-                room.receivers.set(ws.clientId, ws);
-
-                ws.roomId = roomId;
-                ws.role = "receiver";
-
-                send(ws, {
-                    type: "joined",
-                    role: "receiver"
-                });
-
-                if (room.sender) {
-
-                    send(room.sender, {
-                        type: "receiver-joined",
-                        receiverId: ws.clientId
-                    });
-
-                    send(ws, {
-                        type: "sender-ready"
-                    });
-                }
-            }
-
-            return;
+          send(receiver, {
+            type: "sender-ready"
+          });
         }
+      } else {
+        room.receivers.set(ws.clientId, ws);
 
-        if (data.type === "leave") {
-            cleanup(ws);
-            return;
+        ws.roomId = roomId;
+        ws.role = "receiver";
+
+        send(ws, {
+          type: "joined",
+          role: "receiver"
+        });
+
+        if (room.sender) {
+          send(room.sender, {
+            type: "receiver-joined",
+            receiverId: ws.clientId
+          });
+
+          send(ws, {
+            type: "sender-ready"
+          });
         }
+      }
 
-        if (!ws.roomId) return;
+      return;
+    }
 
-        const room = rooms.get(ws.roomId);
+    if (data.type === "leave") {
+      cleanup(ws);
+      return;
+    }
 
-        if (!room) return;
+    if (!ws.roomId) return;
 
-        if (data.type === "offer" || data.type === "ice") {
+    const room = rooms.get(ws.roomId);
+    if (!room) return;
 
-            if (ws.role === "sender") {
+    // 送信者 → 受信者
+    if (
+      ws.role === "sender" &&
+      ["offer", "ice"].includes(data.type)
+    ) {
+      const receiver = room.receivers.get(data.receiverId);
 
-                const receiver = room.receivers.get(data.receiverId);
+      send(receiver, {
+        type: data.type,
+        sdp: data.sdp,
+        candidate: data.candidate,
+        generation: data.generation
+      });
 
-                send(receiver, {
-                    type: data.type,
-                    sdp: data.sdp,
-                    candidate: data.candidate
-                });
+      return;
+    }
 
-            } else if (ws.role === "receiver") {
+    // 受信者 → 送信者
+    if (
+      ws.role === "receiver" &&
+      ["answer", "ice", "restart-request"].includes(data.type)
+    ) {
+      send(room.sender, {
+        type: data.type,
+        receiverId: ws.clientId,
+        sdp: data.sdp,
+        candidate: data.candidate,
+        generation: data.generation
+      });
 
-                send(room.sender, {
-                    type: data.type,
-                    receiverId: ws.clientId,
-                    sdp: data.sdp,
-                    candidate: data.candidate
-                });
-            }
+      return;
+    }
+  });
 
-            return;
-        }
+  ws.on("close", () => cleanup(ws));
 
-        if (data.type === "answer" && ws.role === "receiver") {
-
-            send(room.sender, {
-                type: "answer",
-                receiverId: ws.clientId,
-                sdp: data.sdp
-            });
-        }
-    });
-
-    ws.on("close", () => cleanup(ws));
-
-    ws.on("error", err => {
-        console.error("WebSocket error:", err.message);
-    });
+  ws.on("error", err => {
+    console.error("WebSocket:", err.message);
+  });
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-    console.log(`WebRTC Caster v15 running on port ${PORT}`);
+  console.log(
+    `WebRTC Caster v20 running on port ${PORT}`
+  );
 });
