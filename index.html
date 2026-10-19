@@ -4,2025 +4,1829 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 
-<title>WebRTC Caster v17</title>
+<title>WebRTC Caster v18</title>
 
 <style>
 * {
-    box-sizing: border-box;
+  box-sizing: border-box;
 }
 
 body {
-    margin: 0;
-    padding: 20px;
-    background: #101820;
-    color: white;
-    font-family: Arial, sans-serif;
+  margin: 0;
+  padding: 20px;
+  background: #101114;
+  color: #eee;
+  font-family: system-ui, sans-serif;
+}
+
+main {
+  max-width: 900px;
+  margin: auto;
 }
 
 h1 {
-    color: #43d9ff;
+  margin-bottom: 5px;
 }
 
 h2 {
-    margin-top: 0;
-    color: #a9eaff;
+  margin-top: 0;
 }
 
-.panel {
-    background: #1b2936;
-    padding: 20px;
-    border-radius: 12px;
-    margin: 15px 0;
-}
-
-.row {
-    margin: 12px 0;
-}
-
-label {
-    display: inline-block;
-    min-width: 150px;
+section {
+  background: #1b1d22;
+  border: 1px solid #333;
+  border-radius: 12px;
+  padding: 20px;
+  margin: 16px 0;
 }
 
 input, select, button {
-    padding: 11px;
-    font-size: 15px;
-    border-radius: 6px;
-    border: none;
-    margin: 5px;
+  font: inherit;
+  padding: 11px;
+  border-radius: 8px;
 }
 
-input[type="text"] {
-    width: 180px;
+input, select {
+  background: #292c33;
+  color: white;
+  border: 1px solid #555;
+}
+
+input[type="text"], select {
+  width: 100%;
+}
+
+select {
+  margin: 8px 0 16px;
 }
 
 button {
-    background: #009dff;
-    color: white;
-    cursor: pointer;
+  border: 0;
+  background: #2868d8;
+  color: white;
+  cursor: pointer;
+  margin: 4px;
 }
 
 button:hover {
-    background: #007dcc;
+  filter: brightness(1.15);
 }
 
 button:disabled {
-    opacity: .5;
-    cursor: not-allowed;
+  opacity: .5;
+  cursor: not-allowed;
 }
 
-.stop {
-    background: #e54848;
+#sendButton {
+  background: #16834b;
+}
+
+#stopButton {
+  background: #b83232;
+}
+
+#fullscreen {
+  background: #7544c7;
+}
+
+#status, .info {
+  white-space: pre-wrap;
+  background: #20232a;
+  border-radius: 8px;
+  padding: 14px;
+  margin-top: 12px;
+  font-family: monospace;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+#status {
+  color: #90d8ff;
+}
+
+.info {
+  color: #ccc;
+  font-size: 13px;
+}
+
+label {
+  display: block;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.checkbox input {
+  width: 18px;
+  height: 18px;
 }
 
 video {
-    display: block;
-    width: 100%;
-    max-height: 70vh;
-    background: black;
-    border-radius: 10px;
-    object-fit: contain;
+  width: 100%;
+  max-height: 75vh;
+  background: black;
+  object-fit: contain;
+  margin-top: 15px;
+  border-radius: 8px;
 }
 
-.stats {
-    background: #08131d;
-    padding: 18px;
-    border-radius: 8px;
-    white-space: pre-wrap;
-    font-family: monospace;
-    line-height: 1.8;
-    font-size: 14px;
-    overflow-wrap: anywhere;
-}
-
-.status {
-    color: #55ff99;
-    font-weight: bold;
+video:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-height: none;
+  margin: 0;
+  border-radius: 0;
+  object-fit: contain;
 }
 
 small {
-    color: #aaa;
+  color: #aaa;
 }
 
-.notice {
-    color: #ffd479;
+.subtitle {
+  color: #aaa;
 }
 
 .hidden {
-    display: none !important;
+  display: none !important;
 }
 
-#videoContainer {
-    background: black;
-    border-radius: 10px;
-    overflow: hidden;
+.notice {
+  color: #e9c87a;
+  font-size: 13px;
+  margin-top: 12px;
 }
 
-#videoContainer.preview-off {
-    display: none;
+#previewVideo {
+  max-height: 300px;
+}
+
+@media(max-width:600px) {
+  body {
+    padding: 10px;
+  }
+
+  section {
+    padding: 15px;
+  }
+
+  button {
+    margin: 4px 2px;
+  }
 }
 </style>
 </head>
 
 <body>
 
-<h1>🚀 WebRTC Caster v17</h1>
+<main>
 
-<p>高速化・低負荷最適化テスト版</p>
-
-<div class="panel">
-
-<h2>接続設定</h2>
-
-<div class="row">
-<label>ルームID</label>
-<input id="roomId" type="text" value="1234">
-</div>
-
-<div class="row">
-<label>モード</label>
-
-<select id="role">
-<option value="sender">送信側</option>
-<option value="receiver">受信側</option>
-</select>
-</div>
-
-<div class="row">
-<label>キャプチャ解像度</label>
-
-<select id="resolution">
-<option value="original">元解像度</option>
-<option value="1280x720" selected>720p</option>
-<option value="1920x1080">1080p</option>
-<option value="2560x1440">1440p</option>
-</select>
-</div>
-
-<div class="row">
-<label>希望FPS</label>
-
-<select id="captureFPS">
-<option value="30">30 FPS</option>
-<option value="60" selected>60 FPS</option>
-<option value="120">120 FPS（実験）</option>
-</select>
-</div>
-
-<div class="row">
-<label>コーデック</label>
-
-<select id="codecMode">
-<option value="auto">ブラウザ自動</option>
-<option value="h264" selected>H.264優先</option>
-<option value="vp8">VP8優先</option>
-</select>
-</div>
-
-<div class="row">
-<label>ビットレート</label>
-
-<select id="bitrateMode">
-<option value="auto">ブラウザ自動</option>
-<option value="20000000" selected>最大20Mbps</option>
-</select>
-</div>
-
-<div class="row">
-<label>品質優先</label>
-
-<select id="qualityMode">
-<option value="balanced">バランス</option>
-<option value="maintain-framerate" selected>FPS優先</option>
-<option value="maintain-resolution">解像度優先</option>
-</select>
-</div>
-
-<div class="row">
-<label>
-<input id="shareAudio" type="checkbox" checked>
-音声共有
-</label>
-</div>
-
-<div class="row">
-<label>
-<input id="showPreview" type="checkbox">
-送信側プレビュー表示
-</label>
-</div>
-
-<button id="startButton">開始</button>
-
-<button id="stopButton" class="stop" disabled>
-停止
-</button>
-
-<p>
-状態：
-<span id="status" class="status">準備完了</span>
-</p>
-
-<small>
-配信設定は開始時に適用されます。変更する場合は再接続してください。
+<h1>WebRTC Caster v18</h1>
+<small class="subtitle">
+Classic UI × Optimized WebRTC
 </small>
 
-</div>
+<div id="status">準備完了</div>
 
-<div class="panel">
+<section>
+  <h2>ルーム</h2>
 
-<h2>映像</h2>
+  <input
+    id="room"
+    type="text"
+    value="1111"
+    maxlength="32"
+    placeholder="ルームID"
+  >
+</section>
 
-<div id="videoContainer">
-<video
+<section>
+  <h2>画面を送信</h2>
+
+  <button id="sendButton">
+    🖥 画面を送信
+  </button>
+
+  <button id="stopButton">
+    ■ 停止
+  </button>
+
+  <div id="senderInfo" class="info">
+    未送信
+  </div>
+
+  <video
+    id="previewVideo"
+    autoplay
+    playsinline
+    muted
+    class="hidden"
+  ></video>
+</section>
+
+<section>
+  <h2>配信設定</h2>
+
+  <label>最大画質</label>
+
+  <select id="quality">
+    <option value="360">360p</option>
+    <option value="480">480p</option>
+    <option value="720" selected>720p</option>
+    <option value="1080">1080p</option>
+    <option value="native">元画質</option>
+  </select>
+
+  <label>FPS</label>
+
+  <select id="fpsMode">
+    <option value="auto">自動調整</option>
+    <option value="15">15 FPS</option>
+    <option value="30" selected>30 FPS</option>
+    <option value="60">60 FPS</option>
+    <option value="120">120 FPS（実験）</option>
+    <option value="browser">ブラウザ任せ</option>
+  </select>
+
+  <label>品質優先度</label>
+
+  <select id="priority">
+    <option value="maintain-resolution" selected>
+      解像度優先
+    </option>
+
+    <option value="maintain-framerate">
+      FPS優先
+    </option>
+
+    <option value="balanced">
+      バランス
+    </option>
+  </select>
+
+  <label>コーデック</label>
+
+  <select id="codecMode">
+    <option value="auto">ブラウザ自動</option>
+    <option value="h264" selected>H.264優先</option>
+    <option value="vp8">VP8優先</option>
+  </select>
+
+  <label>ビットレート</label>
+
+  <select id="bitrateMode">
+    <option value="auto">ブラウザ自動</option>
+    <option value="20000000" selected>
+      最大20Mbps
+    </option>
+  </select>
+
+  <label class="checkbox">
+    <input
+      type="checkbox"
+      id="shareAudio"
+      checked
+    >
+    音声を共有
+  </label>
+
+  <label class="checkbox">
+    <input
+      type="checkbox"
+      id="showPreview"
+    >
+    送信側プレビューを表示
+  </label>
+
+  <button id="applySettings">
+    設定を適用
+  </button>
+
+  <div id="settingsInfo" class="info">
+    設定待機中
+  </div>
+
+  <div class="notice">
+    画質・FPS・品質優先度・ビットレートは配信中に変更できます。
+    コーデック変更は再接続後に反映されます。
+  </div>
+</section>
+
+<section>
+  <h2>送信統計</h2>
+
+  <div id="senderStats" class="info">
+    接続端末なし
+  </div>
+</section>
+
+<section>
+  <h2>画面を受信</h2>
+
+  <button id="receiveButton">
+    📺 画面を受信
+  </button>
+
+  <button id="fullscreen">
+    ⛶ 全画面
+  </button>
+
+  <button id="muteButton">
+    🔇 ミュート中
+  </button>
+
+  <video
     id="video"
     autoplay
     playsinline
     muted
-></video>
-</div>
+  ></video>
 
-<br>
+  <div id="receiverStats" class="info">
+    未接続
+  </div>
+</section>
 
-<button id="fullscreenButton">
-全画面表示
-</button>
+<section>
+  <h2>システム情報</h2>
 
-<button id="muteButton">
-ミュート解除
-</button>
+  <div class="info">
+映像処理：ブラウザ標準WebRTC
+Canvas：不使用
+Worker：不使用
+通信方式：WebRTC P2P
+シグナリング：WebSocket
+最大帯域：20Mbps / 受信者（設定時）
+  </div>
 
-<p id="previewNotice" class="notice hidden">
-送信側プレビューはOFFです。画面共有とWebRTC送信は継続しています。
-</p>
+  <small>
+    FPSや画質は端末性能・共有対象・通信状況によって変化します。
+  </small>
+</section>
 
-</div>
-
-<div class="panel">
-
-<h2>📊 詳細統計</h2>
-
-<div id="stats" class="stats">
-待機中...
-</div>
-
-</div>
-
-<div class="panel">
-
-<h2>v17 高速化テスト</h2>
-
-<p>
-Canvas・Workerを使用せず、ブラウザ標準WebRTCで直接送信します。
-</p>
-
-<p>
-送信側プレビューをOFFにすることで、余分な映像表示処理を減らせるか検証します。
-</p>
-
-<p>
-通信速度・FPS・エンコード時間・RTT・推定帯域を測定します。
-</p>
-
-<small>
-ビットレート20Mbpsは上限です。実際に20Mbpsの通信を発生させる設定ではありません。
-</small>
-
-</div>
+</main>
 
 <script>
 "use strict";
 
-// =====================================================
-// 基本設定
-// =====================================================
+// ==================================================
+// BASIC STATE
+// ==================================================
 
 const $ = id => document.getElementById(id);
 
 const video = $("video");
+const previewVideo = $("previewVideo");
 
-const peers = new Map();
-const pendingIce = new Map();
-const previousStats = new Map();
+const senderPeers = new Map();
+const pendingICE = new Map();
+const senderHistory = new Map();
+const peerQuality = new Map();
 
-let ws = null;
-let localStream = null;
 let receiverPeer = null;
+let receiverHistory = null;
+let pendingReceiverICE = [];
 
-let role = null;
-let roomId = null;
+let socket = null;
+let localStream = null;
 
+let mode = null;
 let running = false;
 let sessionId = 0;
 
-let statsTimer = null;
-let statsUpdating = false;
+let statsBusy = false;
+let settingsBusy = false;
+
+const MAX_BITRATE = 20_000_000;
+
+const QUALITY_STEPS = [
+  240, 360, 480, 540,
+  720, 1080, 1440, 2160
+];
 
 const rtcConfig = {
-    iceServers: [
-        {
-            urls: "stun:stun.l.google.com:19302"
-        },
-        {
-            urls: "stun:stun1.l.google.com:19302"
-        }
-    ]
+  iceServers: [
+    {
+      urls: "stun:stun.l.google.com:19302"
+    },
+    {
+      urls: "stun:stun1.l.google.com:19302"
+    }
+  ]
 };
 
-// =====================================================
-// 状態表示
-// =====================================================
+// ==================================================
+// BASIC FUNCTIONS
+// ==================================================
 
-function setStatus(text) {
-    $("status").textContent = text;
+function status(text) {
+  console.log(text);
+  $("status").textContent = text;
 }
 
-function send(data) {
-    if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(data));
-    }
+function room() {
+  const value = $("room").value.trim();
+
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(value)) {
+    throw new Error(
+      "ルームIDは英数字・_・-で1～32文字にしてください"
+    );
+  }
+
+  return value;
 }
 
-// =====================================================
-// プレビューFPS計測
-// =====================================================
-
-let displayFPS = 0;
-let displayCount = 0;
-let displayStart = 0;
-let displayToken = 0;
-let lastPresentedFrames = null;
-
-function resetDisplayFPS() {
-    displayToken++;
-    displayFPS = 0;
-    displayCount = 0;
-    displayStart = 0;
-    lastPresentedFrames = null;
+function signal(data) {
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(data));
+  }
 }
 
-function startDisplayFPS() {
-
-    resetDisplayFPS();
-
-    if (!video.requestVideoFrameCallback) {
-        return;
-    }
-
-    const token = displayToken;
-
-    function callback(now, metadata) {
-
-        if (!running || token !== displayToken) {
-            return;
-        }
-
-        const presented = metadata.presentedFrames;
-
-        if (
-            typeof presented === "number" &&
-            lastPresentedFrames !== null
-        ) {
-            displayCount += Math.max(
-                0,
-                presented - lastPresentedFrames
-            );
-        } else {
-            displayCount++;
-        }
-
-        if (typeof presented === "number") {
-            lastPresentedFrames = presented;
-        }
-
-        if (!displayStart) {
-            displayStart = now;
-        }
-
-        const elapsed = now - displayStart;
-
-        if (elapsed >= 1000) {
-
-            displayFPS = displayCount * 1000 / elapsed;
-
-            displayCount = 0;
-            displayStart = now;
-        }
-
-        video.requestVideoFrameCallback(callback);
-    }
-
-    video.requestVideoFrameCallback(callback);
+function createPeer() {
+  return new RTCPeerConnection(rtcConfig);
 }
 
-// =====================================================
-// プレビュー切替
-// =====================================================
+function fmt(value, digits = 1) {
+  if (
+    value === null ||
+    value === undefined ||
+    !Number.isFinite(value)
+  ) {
+    return "計測中";
+  }
+
+  return value.toFixed(digits);
+}
+
+function rate(current, previous, seconds) {
+  if (
+    typeof current !== "number" ||
+    typeof previous !== "number" ||
+    seconds <= 0
+  ) {
+    return null;
+  }
+
+  const difference = current - previous;
+
+  return difference >= 0
+    ? difference / seconds
+    : null;
+}
+
+// ==================================================
+// SETTINGS
+// ==================================================
+
+function maxQuality() {
+  return $("quality").value === "native"
+    ? Infinity
+    : Number($("quality").value);
+}
+
+function selectedFPS() {
+  const value = $("fpsMode").value;
+
+  if (
+    value === "browser" ||
+    value === "auto"
+  ) {
+    return null;
+  }
+
+  return Number(value);
+}
+
+function requestedCaptureFPS() {
+  const fps = selectedFPS();
+
+  return fps === null ? 60 : fps;
+}
+
+function updateSettingsInfo() {
+  $("settingsInfo").textContent =
+    "最大画質: " +
+    $("quality").selectedOptions[0].text +
+    "\nFPS: " +
+    $("fpsMode").selectedOptions[0].text +
+    "\n品質優先: " +
+    $("priority").selectedOptions[0].text +
+    "\nコーデック: " +
+    $("codecMode").selectedOptions[0].text +
+    "\nビットレート: " +
+    $("bitrateMode").selectedOptions[0].text +
+    "\n映像処理: ブラウザ標準";
+}
+
+// ==================================================
+// CODEC
+// ==================================================
+
+function applyCodecPreferences(pc) {
+  const mode = $("codecMode").value;
+
+  if (mode === "auto") return;
+
+  const transceiver =
+    pc.getTransceivers().find(t =>
+      t.sender.track?.kind === "video"
+    );
+
+  if (!transceiver?.setCodecPreferences) {
+    return;
+  }
+
+  const capabilities =
+    RTCRtpSender.getCapabilities?.("video");
+
+  if (!capabilities?.codecs) return;
+
+  const mime =
+    mode === "h264"
+      ? "video/h264"
+      : "video/vp8";
+
+  const preferred = capabilities.codecs.filter(c =>
+    c.mimeType.toLowerCase() === mime
+  );
+
+  if (!preferred.length) {
+    console.warn("Codec unsupported:", mime);
+    return;
+  }
+
+  const others = capabilities.codecs.filter(c =>
+    c.mimeType.toLowerCase() !== mime
+  );
+
+  try {
+    transceiver.setCodecPreferences([
+      ...preferred,
+      ...others
+    ]);
+  } catch (err) {
+    console.warn("Codec preference:", err);
+  }
+}
+
+// ==================================================
+// PREVIEW
+// ==================================================
 
 function updatePreview() {
+  const show =
+    running &&
+    mode === "sender" &&
+    $("showPreview").checked &&
+    !!localStream;
 
-    const senderMode = running && role === "sender";
+  if (show) {
+    previewVideo.classList.remove("hidden");
 
-    const show = $("showPreview").checked;
-
-    $("previewNotice").classList.toggle(
-        "hidden",
-        !senderMode || show
-    );
-
-    $("videoContainer").classList.toggle(
-        "preview-off",
-        senderMode && !show
-    );
-
-    if (senderMode) {
-
-        if (show) {
-
-            if (video.srcObject !== localStream) {
-                video.srcObject = localStream;
-            }
-
-            video.muted = true;
-
-            video.play().catch(console.warn);
-
-            startDisplayFPS();
-
-        } else {
-
-            resetDisplayFPS();
-
-            video.pause();
-
-            video.srcObject = null;
-        }
+    if (previewVideo.srcObject !== localStream) {
+      previewVideo.srcObject = localStream;
     }
+
+    previewVideo.play().catch(console.warn);
+  } else {
+    previewVideo.pause();
+    previewVideo.srcObject = null;
+    previewVideo.classList.add("hidden");
+  }
 }
 
 $("showPreview").addEventListener(
-    "change",
-    updatePreview
+  "change",
+  updatePreview
 );
 
-// =====================================================
-// コーデック優先設定
-// =====================================================
+// ==================================================
+// SENDER PARAMETERS
+// ==================================================
 
-function applyCodecPreferences(pc, mode) {
+function getPeerTargetHeight(id) {
+  const maximum = maxQuality();
 
-    if (mode === "auto") {
-        return;
-    }
+  if ($("priority").value !== "maintain-framerate") {
+    return maximum;
+  }
 
-    const transceiver = pc.getTransceivers().find(t =>
-        t.sender.track?.kind === "video"
-    );
+  const state = peerQuality.get(id);
 
-    if (!transceiver?.setCodecPreferences) {
-        return;
-    }
-
-    const capabilities =
-        RTCRtpSender.getCapabilities?.("video");
-
-    if (!capabilities?.codecs) {
-        return;
-    }
-
-    const mime =
-        mode === "h264"
-            ? "video/h264"
-            : "video/vp8";
-
-    const preferred = capabilities.codecs.filter(c =>
-        c.mimeType.toLowerCase() === mime
-    );
-
-    if (!preferred.length) {
-
-        console.warn(
-            "指定コーデックが利用できません:",
-            mime
-        );
-
-        return;
-    }
-
-    const others = capabilities.codecs.filter(c =>
-        c.mimeType.toLowerCase() !== mime
-    );
-
-    try {
-
-        transceiver.setCodecPreferences([
-            ...preferred,
-            ...others
-        ]);
-
-        console.log("Codec priority:", mime);
-
-    } catch (err) {
-
-        console.warn(
-            "Codec preference error:",
-            err
-        );
-    }
+  return Math.min(
+    maximum,
+    state?.height ?? maximum
+  );
 }
 
-// =====================================================
-// WebRTC送信パラメータ
-// =====================================================
+async function configureSender(sender, id) {
+  if (sender.track?.kind !== "video") return;
 
-async function optimizeSender(sender) {
+  const settings = sender.track.getSettings();
 
-    if (sender.track?.kind !== "video") {
-        return;
-    }
+  const width = settings.width || 1280;
+  const height = settings.height || 720;
 
-    const bitrateMode = $("bitrateMode").value;
-    const qualityMode = $("qualityMode").value;
+  const targetHeight = getPeerTargetHeight(id);
 
-    // 完全自動＋バランスならブラウザの初期設定を維持
-    if (
-        bitrateMode === "auto" &&
-        qualityMode === "balanced"
-    ) {
-        return;
-    }
+  let scale = 1;
 
-    try {
+  if (Number.isFinite(targetHeight)) {
+    scale = Math.max(
+      1,
+      height / targetHeight,
+      width / (targetHeight * 16 / 9)
+    );
+  }
 
-        const parameters = sender.getParameters();
+  const params = sender.getParameters();
 
-        if (!parameters.encodings?.length) {
-            parameters.encodings = [{}];
-        }
+  if (!params.encodings?.length) {
+    params.encodings = [{}];
+  }
 
-        if (bitrateMode !== "auto") {
+  const encoding = params.encodings[0];
 
-            parameters.encodings[0].maxBitrate =
-                Number(bitrateMode);
-        }
+  encoding.scaleResolutionDownBy = scale;
 
-        // 120FPS要求でも送信FPSの上限は設定しない
-        // ブラウザの実際の処理能力を調べるため
+  if ($("bitrateMode").value === "auto") {
+    delete encoding.maxBitrate;
+  } else {
+    encoding.maxBitrate = MAX_BITRATE;
+  }
 
-        if (qualityMode !== "balanced") {
+  const fps = selectedFPS();
 
-            parameters.degradationPreference =
-                qualityMode;
-        }
+  if (fps === null) {
+    delete encoding.maxFramerate;
+  } else {
+    encoding.maxFramerate = fps;
+  }
 
-        await sender.setParameters(parameters);
+  params.degradationPreference =
+    $("priority").value;
 
-        console.log(
-            "Sender parameters:",
-            sender.getParameters()
-        );
-
-    } catch (err) {
-
-        console.warn(
-            "Sender optimization error:",
-            err
-        );
-    }
+  await sender.setParameters(params);
 }
 
-// =====================================================
-// 開始
-// =====================================================
+async function configurePeer(id) {
+  const pc = senderPeers.get(id);
 
-$("startButton").addEventListener("click", start);
+  if (!pc) return;
 
-async function start() {
-
-    if (running) {
-        return;
+  for (const sender of pc.getSenders()) {
+    if (sender.track?.kind === "video") {
+      await configureSender(sender, id);
     }
-
-    role = $("role").value;
-    roomId = $("roomId").value.trim();
-
-    if (!roomId || roomId.length > 64) {
-
-        alert(
-            "ルームIDは1～64文字で入力してください"
-        );
-
-        return;
-    }
-
-    running = true;
-
-    const token = ++sessionId;
-
-    $("startButton").disabled = true;
-    $("stopButton").disabled = false;
-
-    for (const id of [
-        "role",
-        "roomId",
-        "resolution",
-        "captureFPS",
-        "codecMode",
-        "bitrateMode",
-        "qualityMode",
-        "shareAudio"
-    ]) {
-        $(id).disabled = true;
-    }
-
-    try {
-
-        if (role === "sender") {
-
-            setStatus("画面キャプチャ開始中...");
-
-            const fps = Number(
-                $("captureFPS").value
-            );
-
-            const resolution =
-                $("resolution").value;
-
-            const videoConstraints = {
-                frameRate: {
-                    ideal: fps
-                }
-            };
-
-            if (resolution !== "original") {
-
-                const [width, height] =
-                    resolution.split("x").map(Number);
-
-                videoConstraints.width = {
-                    ideal: width
-                };
-
-                videoConstraints.height = {
-                    ideal: height
-                };
-            }
-
-            const stream =
-                await navigator.mediaDevices.getDisplayMedia({
-
-                    video: videoConstraints,
-
-                    audio: $("shareAudio").checked
-
-                });
-
-            if (token !== sessionId) {
-
-                stream.getTracks().forEach(
-                    track => track.stop()
-                );
-
-                return;
-            }
-
-            localStream = stream;
-
-            const track =
-                stream.getVideoTracks()[0];
-
-            if ("contentHint" in track) {
-
-                track.contentHint = "motion";
-            }
-
-            console.log(
-                "Capture settings:",
-                track.getSettings()
-            );
-
-            track.addEventListener(
-                "ended",
-                stop,
-                { once: true }
-            );
-
-            updatePreview();
-
-        } else {
-
-            video.muted = true;
-
-            resetDisplayFPS();
-
-            $("videoContainer").classList.remove(
-                "preview-off"
-            );
-        }
-
-        setStatus("WebSocket接続中...");
-
-        await connectWebSocket();
-
-        if (token !== sessionId) {
-            return;
-        }
-
-        statsTimer = setInterval(
-            updateStats,
-            1000
-        );
-
-        updateStats();
-
-    } catch (err) {
-
-        console.error(err);
-
-        alert(
-            "開始失敗: " + err.message
-        );
-
-        stop();
-    }
+  }
 }
 
-// =====================================================
-// WebSocket
-// =====================================================
+function createQualityState() {
+  return {
+    height: maxQuality(),
+    lastChange: Date.now(),
+    pendingTest: null,
+    disabled: false
+  };
+}
 
-function connectWebSocket() {
+async function applySettings() {
+  if (settingsBusy) return;
 
-    return new Promise((resolve, reject) => {
+  settingsBusy = true;
+  $("applySettings").disabled = true;
 
-        const protocol =
-            location.protocol === "https:"
-                ? "wss:"
-                : "ws:";
+  try {
+    for (const id of senderPeers.keys()) {
+      peerQuality.set(id, createQualityState());
+    }
 
-        const socket = new WebSocket(
-            `${protocol}//${location.host}/signal`
-        );
+    const errors = [];
 
-        ws = socket;
+    for (const id of senderPeers.keys()) {
+      try {
+        await configurePeer(id);
+      } catch (err) {
+        errors.push(err.message);
+      }
+    }
 
-        let settled = false;
+    updateSettingsInfo();
 
-        socket.onopen = () => {
+    status(
+      errors.length
+        ? "一部の設定変更に失敗:\n" +
+          errors.join("\n")
+        : "配信設定を更新しました"
+    );
 
-            if (!running || ws !== socket) {
+  } finally {
+    settingsBusy = false;
+    $("applySettings").disabled = false;
+  }
+}
 
-                socket.close();
-
-                reject(
-                    new Error("開始処理が中断されました")
-                );
-
-                return;
-            }
-
-            send({
-                type: "join",
-                roomId,
-                role
-            });
-
-            settled = true;
-            resolve();
-        };
-
-        socket.onerror = () => {
-
-            if (!settled) {
-
-                settled = true;
-
-                reject(
-                    new Error("WebSocket接続エラー")
-                );
-            }
-        };
-
-        socket.onclose = () => {
-
-            if (!settled) {
-
-                settled = true;
-
-                reject(
-                    new Error("WebSocket接続が終了しました")
-                );
-            }
-
-            if (running && ws === socket) {
-
-                setStatus("サーバー接続切断");
-
-                stop();
-            }
-        };
-
-        socket.onmessage = async event => {
-
-            if (!running || ws !== socket) {
-                return;
-            }
-
-            try {
-
-                const data = JSON.parse(event.data);
-
-                await handleSignal(data);
-
-            } catch (err) {
-
-                console.error(
-                    "Signal error:",
-                    err
-                );
-
-                setStatus(
-                    "接続処理エラー: " + err.message
-                );
-            }
-        };
+$("applySettings").addEventListener(
+  "click",
+  () => {
+    applySettings().catch(err => {
+      console.error(err);
+      status("設定エラー: " + err.message);
     });
-}
+  }
+);
 
-// =====================================================
-// シグナリング
-// =====================================================
+// ==================================================
+// WEBSOCKET
+// ==================================================
 
-async function handleSignal(data) {
+function connectSocket() {
+  return new Promise((resolve, reject) => {
+    const protocol =
+      location.protocol === "https:"
+        ? "wss:"
+        : "ws:";
 
-    switch (data.type) {
-
-        case "joined":
-
-            setStatus(
-                role === "sender"
-                    ? "受信者待機中"
-                    : "送信者待機中"
-            );
-
-            break;
-
-        case "receiver-joined":
-
-            if (role === "sender") {
-
-                await createSenderPeer(
-                    data.receiverId
-                );
-            }
-
-            break;
-
-        case "receiver-left":
-
-            closeSenderPeer(
-                data.receiverId
-            );
-
-            break;
-
-        case "sender-ready":
-
-            if (role === "receiver") {
-
-                setStatus(
-                    "送信者を検出しました"
-                );
-            }
-
-            break;
-
-        case "sender-left":
-
-            closeReceiverPeer();
-
-            setStatus(
-                "送信者が退出しました"
-            );
-
-            break;
-
-        case "offer":
-
-            if (role === "receiver") {
-
-                await handleOffer(data);
-            }
-
-            break;
-
-        case "answer":
-
-            if (role === "sender") {
-
-                await handleAnswer(data);
-            }
-
-            break;
-
-        case "ice":
-
-            await handleIce(data);
-
-            break;
-
-        case "error":
-
-            alert(data.message);
-
-            stop();
-
-            break;
-    }
-}
-
-// =====================================================
-// PeerConnection
-// =====================================================
-
-function createPeerConnection() {
-
-    const pc = new RTCPeerConnection(
-        rtcConfig
+    const ws = new WebSocket(
+      `${protocol}//${location.host}/signal`
     );
 
-    pc.onconnectionstatechange = () => {
+    socket = ws;
 
-        if (!running) {
-            return;
-        }
+    let settled = false;
 
-        console.log(
-            "WebRTC state:",
-            pc.connectionState
-        );
+    ws.onopen = () => {
+      if (socket !== ws || !running) {
+        ws.close();
+        return;
+      }
 
-        if (pc.connectionState === "connected") {
-
-            setStatus(
-                "WebRTC接続成功！"
-            );
-        }
-
-        if (pc.connectionState === "failed") {
-
-            setStatus(
-                "WebRTC接続失敗"
-            );
-        }
+      settled = true;
+      resolve();
     };
 
-    return pc;
+    ws.onerror = () => {
+      if (!settled) {
+        settled = true;
+        reject(new Error("WebSocket接続失敗"));
+      }
+    };
+
+    ws.onclose = () => {
+      if (!settled) {
+        settled = true;
+        reject(new Error("WebSocket接続終了"));
+      }
+
+      if (socket === ws && running) {
+        stop();
+        status("サーバーとの接続が切れました");
+      }
+    };
+
+    ws.onmessage = async event => {
+      if (!running || socket !== ws) return;
+
+      try {
+        await handleSignal(JSON.parse(event.data));
+      } catch (err) {
+        console.error(err);
+        status("通信エラー: " + err.message);
+      }
+    };
+  });
 }
 
-// =====================================================
-// 送信側
-// =====================================================
+// ==================================================
+// SENDER PEER
+// ==================================================
 
 async function createSenderPeer(id) {
+  if (!running || !localStream) return;
 
-    if (!running || !localStream) {
-        return;
+  closeSenderPeer(id);
+
+  const pc = createPeer();
+
+  senderPeers.set(id, pc);
+  peerQuality.set(id, createQualityState());
+  pendingICE.set(id, []);
+
+  pc.onicecandidate = event => {
+    if (event.candidate) {
+      signal({
+        type: "ice",
+        receiverId: id,
+        candidate: event.candidate
+      });
     }
+  };
 
-    closeSenderPeer(id);
+  pc.onconnectionstatechange = () => {
+    updateSenderInfo();
 
-    const pc = createPeerConnection();
+    if (pc.connectionState === "connected") {
+      status("受信端末と接続しました");
+    }
+  };
 
-    peers.set(id, pc);
-    pendingIce.set(id, []);
-
-    pc.onicecandidate = event => {
-
-        if (event.candidate) {
-
-            send({
-                type: "ice",
-                receiverId: id,
-                candidate: event.candidate
-            });
-        }
-    };
-
+  try {
     for (const track of localStream.getTracks()) {
+      const sender = pc.addTrack(
+        track,
+        localStream
+      );
 
-        const sender = pc.addTrack(
-            track,
-            localStream
-        );
-
-        if (track.kind === "video") {
-
-            await optimizeSender(sender);
+      if (track.kind === "video") {
+        try {
+          await configureSender(sender, id);
+        } catch (err) {
+          console.warn("Sender parameters:", err);
         }
+      }
     }
 
-    if (!running || peers.get(id) !== pc) {
-        return;
-    }
-
-    applyCodecPreferences(
-        pc,
-        $("codecMode").value
-    );
+    applyCodecPreferences(pc);
 
     const offer = await pc.createOffer();
 
-    if (!running || peers.get(id) !== pc) {
-        return;
+    if (!running || senderPeers.get(id) !== pc) {
+      return;
     }
 
     await pc.setLocalDescription(offer);
 
-    send({
-        type: "offer",
-        receiverId: id,
-        sdp: pc.localDescription
+    signal({
+      type: "offer",
+      receiverId: id,
+      sdp: pc.localDescription
     });
 
-    setStatus(
-        "受信者と接続中..."
-    );
-}
+    updateSenderInfo();
 
-async function handleAnswer(data) {
-
-    const pc = peers.get(
-        data.receiverId
-    );
-
-    if (
-        !pc ||
-        pc.signalingState !== "have-local-offer"
-    ) {
-        return;
-    }
-
-    await pc.setRemoteDescription(
-        data.sdp
-    );
-
-    await flushIce(
-        data.receiverId,
-        pc
-    );
+  } catch (err) {
+    closeSenderPeer(id);
+    throw err;
+  }
 }
 
 function closeSenderPeer(id) {
+  senderPeers.get(id)?.close();
 
-    const pc = peers.get(id);
+  senderPeers.delete(id);
+  pendingICE.delete(id);
+  senderHistory.delete(id);
+  peerQuality.delete(id);
 
-    if (pc) {
-        pc.close();
+  updateSenderInfo();
+}
+
+function updateSenderInfo() {
+  let connected = 0;
+
+  for (const pc of senderPeers.values()) {
+    if (pc.connectionState === "connected") {
+      connected++;
     }
+  }
 
-    peers.delete(id);
-    pendingIce.delete(id);
-    previousStats.delete(id);
+  $("senderInfo").textContent =
+    mode === "sender"
+      ? "接続中: " + connected + "台" +
+        "\nPeer数: " + senderPeers.size +
+        "\n音声: " +
+        (localStream?.getAudioTracks().length
+          ? "あり"
+          : "なし")
+      : "未送信";
 }
 
-// =====================================================
-// 受信側
-// =====================================================
-
-async function handleOffer(data) {
-
-    const earlyIce =
-        pendingIce.get("receiver") || [];
-
-    closeReceiverPeer();
-
-    const pc = createPeerConnection();
-
-    receiverPeer = pc;
-
-    pendingIce.set(
-        "receiver",
-        earlyIce
-    );
-
-    pc.onicecandidate = event => {
-
-        if (event.candidate) {
-
-            send({
-                type: "ice",
-                candidate: event.candidate
-            });
-        }
-    };
-
-    pc.ontrack = event => {
-
-        if (event.streams?.[0]) {
-
-            video.srcObject =
-                event.streams[0];
-
-        } else {
-
-            let stream = video.srcObject;
-
-            if (!(stream instanceof MediaStream)) {
-
-                stream = new MediaStream();
-
-                video.srcObject = stream;
-            }
-
-            if (!stream.getTracks().includes(event.track)) {
-
-                stream.addTrack(event.track);
-            }
-        }
-
-        video.play().catch(console.warn);
-
-        if (event.track.kind === "video") {
-            startDisplayFPS();
-        }
-    };
-
-    await pc.setRemoteDescription(
-        data.sdp
-    );
-
-    await flushIce(
-        "receiver",
-        pc
-    );
-
-    const answer =
-        await pc.createAnswer();
-
-    await pc.setLocalDescription(answer);
-
-    send({
-        type: "answer",
-        sdp: pc.localDescription
-    });
-
-    setStatus(
-        "映像受信中..."
-    );
-}
+// ==================================================
+// RECEIVER PEER
+// ==================================================
 
 function closeReceiverPeer() {
+  receiverPeer?.close();
+  receiverPeer = null;
 
-    if (receiverPeer) {
-        receiverPeer.close();
-    }
+  receiverHistory = null;
+  pendingReceiverICE = [];
 
-    receiverPeer = null;
+  video.pause();
+  video.srcObject = null;
 
-    pendingIce.delete("receiver");
-    previousStats.delete("receiver");
-
-    resetDisplayFPS();
-
-    video.srcObject = null;
+  $("receiverStats").textContent = "未接続";
 }
 
-// =====================================================
-// ICE Candidate
-// =====================================================
+async function handleOffer(msg) {
+  const earlyICE = pendingReceiverICE;
 
-async function handleIce(data) {
+  closeReceiverPeer();
 
-    if (!data.candidate) {
-        return;
+  pendingReceiverICE = earlyICE;
+
+  const pc = createPeer();
+  receiverPeer = pc;
+
+  pc.onicecandidate = event => {
+    if (event.candidate) {
+      signal({
+        type: "ice",
+        candidate: event.candidate
+      });
+    }
+  };
+
+  pc.ontrack = event => {
+    if (pc !== receiverPeer) return;
+
+    if (event.streams?.[0]) {
+      video.srcObject = event.streams[0];
+    } else {
+      let stream = video.srcObject;
+
+      if (!(stream instanceof MediaStream)) {
+        stream = new MediaStream();
+        video.srcObject = stream;
+      }
+
+      if (!stream.getTracks().includes(event.track)) {
+        stream.addTrack(event.track);
+      }
     }
 
-    const key =
-        role === "sender"
-            ? data.receiverId
-            : "receiver";
+    video.play().catch(console.warn);
+  };
 
-    const pc =
-        role === "sender"
-            ? peers.get(key)
-            : receiverPeer;
+  pc.onconnectionstatechange = () => {
+    if (pc !== receiverPeer) return;
 
-    if (!pc) {
+    if (pc.connectionState === "connected") {
+      status("接続成功！ 映像受信中");
+    }
 
-        if (role === "receiver") {
+    if (pc.connectionState === "failed") {
+      status("WebRTC接続失敗");
+    }
+  };
 
-            if (!pendingIce.has(key)) {
+  await pc.setRemoteDescription(msg.sdp);
 
-                pendingIce.set(key, []);
+  for (const candidate of pendingReceiverICE) {
+    try {
+      await pc.addIceCandidate(candidate);
+    } catch (err) {
+      console.warn("ICE:", err);
+    }
+  }
+
+  pendingReceiverICE = [];
+
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+
+  signal({
+    type: "answer",
+    sdp: pc.localDescription
+  });
+}
+
+// ==================================================
+// SIGNAL HANDLER
+// ==================================================
+
+async function handleSignal(msg) {
+  switch (msg.type) {
+    case "joined":
+      status(
+        mode === "sender"
+          ? "送信準備完了。受信者を待っています。"
+          : "受信準備完了。送信者を待っています。"
+      );
+      break;
+
+    case "sender-ready":
+      if (mode === "receiver") {
+        status("送信者を検出。接続待機中...");
+      }
+      break;
+
+    case "receiver-joined":
+      if (mode === "sender") {
+        await createSenderPeer(msg.receiverId);
+      }
+      break;
+
+    case "receiver-left":
+      if (mode === "sender") {
+        closeSenderPeer(msg.receiverId);
+      }
+      break;
+
+    case "sender-left":
+      if (mode === "receiver") {
+        closeReceiverPeer();
+        status("送信者が退出しました");
+      }
+      break;
+
+    case "offer":
+      if (mode === "receiver") {
+        await handleOffer(msg);
+      }
+      break;
+
+    case "answer":
+      if (mode === "sender") {
+        const pc = senderPeers.get(msg.receiverId);
+
+        if (
+          pc &&
+          pc.signalingState === "have-local-offer"
+        ) {
+          await pc.setRemoteDescription(msg.sdp);
+
+          const candidates =
+            pendingICE.get(msg.receiverId) || [];
+
+          pendingICE.set(msg.receiverId, []);
+
+          for (const candidate of candidates) {
+            try {
+              await pc.addIceCandidate(candidate);
+            } catch (err) {
+              console.warn("ICE:", err);
             }
-
-            pendingIce.get(key).push(
-                data.candidate
-            );
+          }
         }
+      }
+      break;
 
-        return;
-    }
+    case "ice":
+      await handleICE(msg);
+      break;
+
+    case "error":
+      status("サーバーエラー: " + msg.message);
+      stop(false);
+      break;
+  }
+}
+
+// ==================================================
+// ICE
+// ==================================================
+
+async function handleICE(msg) {
+  if (!msg.candidate) return;
+
+  if (mode === "sender") {
+    const id = msg.receiverId;
+    const pc = senderPeers.get(id);
+
+    if (!pc) return;
 
     if (pc.remoteDescription) {
-
-        try {
-
-            await pc.addIceCandidate(
-                data.candidate
-            );
-
-        } catch (err) {
-
-            console.warn(
-                "ICE error:",
-                err
-            );
-        }
-
+      try {
+        await pc.addIceCandidate(msg.candidate);
+      } catch (err) {
+        console.warn("ICE:", err);
+      }
     } else {
+      if (!pendingICE.has(id)) {
+        pendingICE.set(id, []);
+      }
 
-        if (!pendingIce.has(key)) {
-
-            pendingIce.set(key, []);
-        }
-
-        pendingIce.get(key).push(
-            data.candidate
-        );
+      pendingICE.get(id).push(msg.candidate);
     }
+
+  } else if (mode === "receiver") {
+    if (receiverPeer?.remoteDescription) {
+      try {
+        await receiverPeer.addIceCandidate(
+          msg.candidate
+        );
+      } catch (err) {
+        console.warn("ICE:", err);
+      }
+    } else {
+      pendingReceiverICE.push(msg.candidate);
+    }
+  }
 }
 
-async function flushIce(key, pc) {
+// ==================================================
+// START SENDER
+// ==================================================
 
-    const candidates =
-        pendingIce.get(key) || [];
-
-    pendingIce.set(key, []);
-
-    for (const candidate of candidates) {
-
-        try {
-
-            await pc.addIceCandidate(
-                candidate
-            );
-
-        } catch (err) {
-
-            console.warn(
-                "ICE error:",
-                err
-            );
-        }
-    }
-}
-
-// =====================================================
-// 統計計算
-// =====================================================
-
-function rate(current, previous, seconds) {
-
-    if (
-        typeof current !== "number" ||
-        typeof previous !== "number" ||
-        seconds <= 0
-    ) {
-        return null;
+$("sendButton").addEventListener(
+  "click",
+  async () => {
+    if (running) {
+      status("既に送信または受信しています");
+      return;
     }
 
-    const difference =
-        current - previous;
-
-    if (difference < 0) {
-        return null;
-    }
-
-    return difference / seconds;
-}
-
-function fmt(value, digits = 1) {
-
-    if (
-        value === null ||
-        value === undefined ||
-        !Number.isFinite(value)
-    ) {
-        return "計測中";
-    }
-
-    return value.toFixed(digits);
-}
-
-// =====================================================
-// WebRTC通信経路
-// =====================================================
-
-function collectConnectionStats(report, lines) {
-
-    let selectedPair = null;
-
-    // 標準的な方法：transportから選択済みcandidate pairを取得
-    for (const stat of report.values()) {
-
-        if (
-            stat.type === "transport" &&
-            stat.selectedCandidatePairId
-        ) {
-
-            selectedPair = report.get(
-                stat.selectedCandidatePairId
-            );
-
-            if (selectedPair) {
-                break;
-            }
-        }
-    }
-
-    // フォールバック
-    if (!selectedPair) {
-
-        for (const stat of report.values()) {
-
-            if (
-                stat.type === "candidate-pair" &&
-                stat.state === "succeeded" &&
-                stat.nominated
-            ) {
-
-                selectedPair = stat;
-                break;
-            }
-        }
-    }
-
-    if (!selectedPair) {
-        return;
-    }
-
-    lines.push("");
-    lines.push("========== 通信経路 ==========");
-
-    if (
-        typeof selectedPair.currentRoundTripTime === "number"
-    ) {
-
-        lines.push(
-            `RTT: ${
-                fmt(
-                    selectedPair.currentRoundTripTime * 1000,
-                    1
-                )
-            } ms`
-        );
-    }
-
-    if (
-        typeof selectedPair.availableOutgoingBitrate === "number"
-    ) {
-
-        lines.push(
-            `推定送信帯域: ${
-                fmt(
-                    selectedPair.availableOutgoingBitrate / 1000000,
-                    2
-                )
-            } Mbps`
-        );
-    }
-
-    if (
-        typeof selectedPair.availableIncomingBitrate === "number"
-    ) {
-
-        lines.push(
-            `推定受信帯域: ${
-                fmt(
-                    selectedPair.availableIncomingBitrate / 1000000,
-                    2
-                )
-            } Mbps`
-        );
-    }
-
-    const local = report.get(
-        selectedPair.localCandidateId
-    );
-
-    const remote = report.get(
-        selectedPair.remoteCandidateId
-    );
-
-    if (local) {
-
-        lines.push(
-            `ローカル候補: ${local.candidateType || "不明"}`
-        );
-
-        lines.push(
-            `通信プロトコル: ${local.protocol || "不明"}`
-        );
-    }
-
-    if (remote) {
-
-        lines.push(
-            `リモート候補: ${remote.candidateType || "不明"}`
-        );
-    }
-}
-
-// =====================================================
-// WebRTC映像統計
-// =====================================================
-
-async function collectStats(
-    pc,
-    type,
-    key,
-    lines
-) {
-
-    if (pc.signalingState === "closed") {
-        return;
-    }
-
-    const report = await pc.getStats();
-
-    for (const stat of report.values()) {
-
-        if (
-            stat.type !== type ||
-            stat.kind !== "video"
-        ) {
-            continue;
-        }
-
-        const codec = report.get(
-            stat.codecId
-        );
-
-        const previous =
-            previousStats.get(key);
-
-        const seconds =
-            previous &&
-            previous.id === stat.id
-                ? (
-                    stat.timestamp -
-                    previous.timestamp
-                ) / 1000
-                : 0;
-
-        const bytes =
-            type === "outbound-rtp"
-                ? stat.bytesSent
-                : stat.bytesReceived;
-
-        const bitrate = previous
-            ? rate(
-                bytes,
-                previous.bytes,
-                seconds
-            )
-            : null;
-
-        const mbps =
-            bitrate === null
-                ? null
-                : bitrate * 8 / 1000000;
-
-        const encoded = previous
-            ? rate(
-                stat.framesEncoded,
-                previous.framesEncoded,
-                seconds
-            )
-            : null;
-
-        const received = previous
-            ? rate(
-                stat.framesReceived,
-                previous.framesReceived,
-                seconds
-            )
-            : null;
-
-        const decoded = previous
-            ? rate(
-                stat.framesDecoded,
-                previous.framesDecoded,
-                seconds
-            )
-            : null;
-
-        let encodeMs = null;
-        let decodeMs = null;
-
-        if (previous) {
-
-            const encodedDifference =
-                stat.framesEncoded -
-                previous.framesEncoded;
-
-            const decodedDifference =
-                stat.framesDecoded -
-                previous.framesDecoded;
-
-            if (
-                encodedDifference > 0 &&
-                typeof stat.totalEncodeTime === "number" &&
-                typeof previous.totalEncodeTime === "number"
-            ) {
-
-                encodeMs =
-                    (
-                        stat.totalEncodeTime -
-                        previous.totalEncodeTime
-                    ) * 1000 /
-                    encodedDifference;
-            }
-
-            if (
-                decodedDifference > 0 &&
-                typeof stat.totalDecodeTime === "number" &&
-                typeof previous.totalDecodeTime === "number"
-            ) {
-
-                decodeMs =
-                    (
-                        stat.totalDecodeTime -
-                        previous.totalDecodeTime
-                    ) * 1000 /
-                    decodedDifference;
-            }
-        }
-
-        previousStats.set(key, {
-
-            id: stat.id,
-            timestamp: stat.timestamp,
-
-            bytes,
-
-            framesEncoded: stat.framesEncoded,
-            framesReceived: stat.framesReceived,
-            framesDecoded: stat.framesDecoded,
-
-            totalEncodeTime: stat.totalEncodeTime,
-            totalDecodeTime: stat.totalDecodeTime
-
-        });
-
-        lines.push(
-            `解像度: ${
-                stat.frameWidth || "?"
-            }×${
-                stat.frameHeight || "?"
-            }`
-        );
-
-        lines.push(
-            `Codec: ${codec?.mimeType || "不明"}`
-        );
-
-        lines.push(
-            `通信速度: ${fmt(mbps, 2)} Mbps`
-        );
-
-        lines.push(
-            `WebRTC報告FPS: ${
-                stat.framesPerSecond ?? "不明"
-            }`
-        );
-
-        if (type === "outbound-rtp") {
-
-            lines.push("");
-            lines.push("【送信処理】");
-
-            lines.push(
-                `実測エンコードFPS: ${fmt(encoded)}`
-            );
-
-            lines.push(
-                `平均エンコード時間: ${fmt(encodeMs, 2)} ms`
-            );
-
-            lines.push(
-                `エンコード累計: ${
-                    stat.framesEncoded ?? "不明"
-                }`
-            );
-
-            lines.push(
-                `品質制限理由: ${
-                    stat.qualityLimitationReason || "不明"
-                }`
-            );
-
-            lines.push(
-                `送信パケット数: ${
-                    stat.packetsSent ?? "不明"
-                }`
-            );
-
-            if (
-                typeof stat.retransmittedPacketsSent === "number"
-            ) {
-
-                lines.push(
-                    `再送パケット数: ${
-                        stat.retransmittedPacketsSent
-                    }`
-                );
-            }
-
-        } else {
-
-            lines.push("");
-            lines.push("【受信処理】");
-
-            lines.push(
-                `実測受信FPS: ${fmt(received)}`
-            );
-
-            lines.push(
-                `実測デコードFPS: ${fmt(decoded)}`
-            );
-
-            lines.push(
-                `平均デコード時間: ${fmt(decodeMs, 2)} ms`
-            );
-
-            lines.push(
-                `受信累計: ${
-                    stat.framesReceived ?? "不明"
-                }`
-            );
-
-            lines.push(
-                `デコード累計: ${
-                    stat.framesDecoded ?? "不明"
-                }`
-            );
-
-            lines.push(
-                `破棄フレーム: ${
-                    stat.framesDropped ?? "不明"
-                }`
-            );
-
-            lines.push(
-                `パケットロス: ${
-                    stat.packetsLost ?? "不明"
-                }`
-            );
-
-            if (typeof stat.jitter === "number") {
-
-                lines.push(
-                    `ジッター: ${
-                        fmt(stat.jitter * 1000, 1)
-                    } ms`
-                );
-            }
-
-            if (
-                typeof stat.jitterBufferDelay === "number" &&
-                typeof stat.jitterBufferEmittedCount === "number" &&
-                stat.jitterBufferEmittedCount > 0
-            ) {
-
-                lines.push(
-                    `平均ジッターバッファ時間: ${
-                        fmt(
-                            stat.jitterBufferDelay * 1000 /
-                            stat.jitterBufferEmittedCount,
-                            1
-                        )
-                    } ms`
-                );
-            }
-        }
-    }
-
-    collectConnectionStats(
-        report,
-        lines
-    );
-}
-
-// =====================================================
-// 統計更新
-// =====================================================
-
-async function updateStats() {
-
-    if (!running || statsUpdating) {
-        return;
-    }
-
-    statsUpdating = true;
+    let stream = null;
 
     try {
+      const roomId = room();
 
-        const lines = [];
+      running = true;
+      mode = "sender";
 
-        if (role === "sender") {
+      const token = ++sessionId;
 
-            const track =
-                localStream?.getVideoTracks()[0];
+      $("sendButton").disabled = true;
+      $("receiveButton").disabled = true;
+      $("room").disabled = true;
 
-            if (track) {
+      status("共有する画面を選択してください...");
 
-                const settings =
-                    track.getSettings();
+      const fps = requestedCaptureFPS();
 
-                lines.push(
-                    "========== キャプチャ =========="
-                );
-
-                lines.push(
-                    `解像度: ${
-                        settings.width || "?"
-                    }×${
-                        settings.height || "?"
-                    }`
-                );
-
-                lines.push(
-                    `希望FPS: ${$("captureFPS").value}`
-                );
-
-                lines.push(
-                    `キャプチャ設定FPS: ${
-                        settings.frameRate ?? "不明"
-                    }`
-                );
-
-                lines.push(
-                    `プレビュー: ${
-                        $("showPreview").checked
-                            ? "ON"
-                            : "OFF"
-                    }`
-                );
-
-                if ($("showPreview").checked) {
-
-                    lines.push(
-                        `プレビュー実測FPS: ${fmt(displayFPS)}`
-                    );
-
-                } else {
-
-                    lines.push(
-                        "プレビューFPS: OFFのため計測なし"
-                    );
-                }
-
-                lines.push(
-                    `contentHint: ${
-                        track.contentHint || "なし"
-                    }`
-                );
-
-                lines.push("");
+      stream =
+        await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            frameRate: {
+              ideal: fps
             }
+          },
+          audio: $("shareAudio").checked
+        });
 
-            lines.push(
-                "========== WebRTC送信 =========="
-            );
+      if (token !== sessionId) {
+        stream.getTracks().forEach(t => t.stop());
+        return;
+      }
 
-            lines.push(
-                `接続受信者数: ${peers.size}`
-            );
+      localStream = stream;
 
-            for (const [id, pc] of peers) {
+      const track = stream.getVideoTracks()[0];
 
-                lines.push("");
-                lines.push(
-                    `送信先: ${id.slice(0, 8)}`
-                );
+      if (track) {
+        track.contentHint = "motion";
 
-                lines.push(
-                    `接続状態: ${pc.connectionState}`
-                );
+        track.addEventListener(
+          "ended",
+          () => stop(),
+          { once: true }
+        );
+      }
 
-                await collectStats(
-                    pc,
-                    "outbound-rtp",
-                    id,
-                    lines
-                );
-            }
+      updatePreview();
+      updateSenderInfo();
 
-        } else {
+      await connectSocket();
 
-            lines.push(
-                "========== WebRTC受信 =========="
-            );
+      if (token !== sessionId) return;
 
-            if (receiverPeer) {
-
-                lines.push(
-                    `接続状態: ${
-                        receiverPeer.connectionState
-                    }`
-                );
-
-                await collectStats(
-                    receiverPeer,
-                    "inbound-rtp",
-                    "receiver",
-                    lines
-                );
-
-                lines.push("");
-                lines.push(
-                    "========== 映像表示 =========="
-                );
-
-                lines.push(
-                    `表示実測FPS: ${fmt(displayFPS)}`
-                );
-
-            } else {
-
-                lines.push(
-                    "送信者を待機中..."
-                );
-            }
-        }
-
-        if (running) {
-
-            $("stats").textContent =
-                lines.join("\n");
-        }
+      signal({
+        type: "join",
+        roomId,
+        role: "sender"
+      });
 
     } catch (err) {
+      console.error(err);
 
-        console.warn(
-            "Stats error:",
-            err
-        );
+      if (stream && stream !== localStream) {
+        stream.getTracks().forEach(t => t.stop());
+      }
 
-    } finally {
-
-        statsUpdating = false;
+      stop(false);
+      status("送信エラー:\n" + err.message);
     }
+  }
+);
+
+// ==================================================
+// START RECEIVER
+// ==================================================
+
+$("receiveButton").addEventListener(
+  "click",
+  async () => {
+    if (running) {
+      status("既に送信または受信しています");
+      return;
+    }
+
+    try {
+      const roomId = room();
+
+      running = true;
+      mode = "receiver";
+
+      const token = ++sessionId;
+
+      $("sendButton").disabled = true;
+      $("receiveButton").disabled = true;
+      $("room").disabled = true;
+
+      status("受信準備中...");
+
+      video.muted = true;
+
+      await connectSocket();
+
+      if (token !== sessionId) return;
+
+      signal({
+        type: "join",
+        roomId,
+        role: "receiver"
+      });
+
+    } catch (err) {
+      console.error(err);
+
+      stop(false);
+      status("受信エラー:\n" + err.message);
+    }
+  }
+);
+
+// ==================================================
+// STOP
+// ==================================================
+
+function stop(showStatus = true) {
+  ++sessionId;
+
+  running = false;
+
+  for (const id of [...senderPeers.keys()]) {
+    closeSenderPeer(id);
+  }
+
+  closeReceiverPeer();
+
+  socket?.close();
+  socket = null;
+
+  if (localStream) {
+    localStream.getTracks().forEach(track => {
+      track.stop();
+    });
+  }
+
+  localStream = null;
+  mode = null;
+
+  pendingICE.clear();
+  senderHistory.clear();
+  peerQuality.clear();
+
+  updatePreview();
+  updateSenderInfo();
+
+  $("sendButton").disabled = false;
+  $("receiveButton").disabled = false;
+  $("room").disabled = false;
+
+  video.muted = true;
+
+  $("muteButton").textContent =
+    "🔇 ミュート中";
+
+  $("senderStats").textContent =
+    "接続端末なし";
+
+  $("receiverStats").textContent =
+    "未接続";
+
+  if (showStatus) {
+    status("停止しました");
+  }
 }
-
-// =====================================================
-// 全画面表示
-// =====================================================
-
-$("fullscreenButton").addEventListener(
-    "click",
-    async () => {
-
-        try {
-
-            if (!document.fullscreenElement) {
-
-                await video.requestFullscreen();
-
-            } else {
-
-                await document.exitFullscreen();
-            }
-
-        } catch (err) {
-
-            console.error(err);
-        }
-    }
-);
-
-// =====================================================
-// ミュート
-// =====================================================
-
-$("muteButton").addEventListener(
-    "click",
-    () => {
-
-        if (running && role === "sender") {
-            return;
-        }
-
-        video.muted = !video.muted;
-
-        $("muteButton").textContent =
-            video.muted
-                ? "ミュート解除"
-                : "ミュート";
-    }
-);
-
-// =====================================================
-// 停止
-// =====================================================
 
 $("stopButton").addEventListener(
-    "click",
-    stop
+  "click",
+  () => stop()
 );
 
-function stop() {
+// ==================================================
+// FULLSCREEN
+// ==================================================
 
-    ++sessionId;
+$("fullscreen").addEventListener(
+  "click",
+  async () => {
+    try {
+      if (!video.srcObject) {
+        throw new Error("受信映像がありません");
+      }
 
-    running = false;
+      if (!document.fullscreenElement) {
+        await video.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
 
-    if (statsTimer) {
-
-        clearInterval(statsTimer);
+    } catch (err) {
+      status("全画面エラー:\n" + err.message);
     }
+  }
+);
 
-    statsTimer = null;
+// ==================================================
+// AUDIO
+// ==================================================
 
-    for (const id of [...peers.keys()]) {
-
-        closeSenderPeer(id);
-    }
-
-    closeReceiverPeer();
-
-    if (localStream) {
-
-        localStream.getTracks().forEach(
-            track => track.stop()
-        );
-
-        localStream = null;
-    }
-
-    if (ws) {
-
-        if (
-            ws.readyState === WebSocket.OPEN
-        ) {
-
-            send({
-                type: "leave"
-            });
-        }
-
-        ws.close();
-
-        ws = null;
-    }
-
-    pendingIce.clear();
-    previousStats.clear();
-
-    resetDisplayFPS();
-
-    video.pause();
-    video.srcObject = null;
-    video.muted = true;
+$("muteButton").addEventListener(
+  "click",
+  () => {
+    video.muted = !video.muted;
 
     $("muteButton").textContent =
-        "ミュート解除";
+      video.muted
+        ? "🔇 ミュート中"
+        : "🔊 音声ON";
+  }
+);
 
-    $("videoContainer").classList.remove(
-        "preview-off"
+// ==================================================
+// STATS HELPERS
+// ==================================================
+
+function getVideoReport(stats, type) {
+  for (const report of stats.values()) {
+    if (
+      report.type === type &&
+      (
+        report.kind === "video" ||
+        report.mediaType === "video"
+      ) &&
+      !report.isRemote
+    ) {
+      return report;
+    }
+  }
+
+  return null;
+}
+
+function codecName(stats, report) {
+  return stats.get(report.codecId)?.mimeType || "不明";
+}
+
+function getConnectionInfo(stats) {
+  let pair = null;
+
+  for (const report of stats.values()) {
+    if (
+      report.type === "transport" &&
+      report.selectedCandidatePairId
+    ) {
+      pair = stats.get(
+        report.selectedCandidatePairId
+      );
+      if (pair) break;
+    }
+  }
+
+  if (!pair) {
+    for (const report of stats.values()) {
+      if (
+        report.type === "candidate-pair" &&
+        report.state === "succeeded" &&
+        report.nominated
+      ) {
+        pair = report;
+        break;
+      }
+    }
+  }
+
+  if (!pair) return "";
+
+  const local = stats.get(pair.localCandidateId);
+  const remote = stats.get(pair.remoteCandidateId);
+
+  const lines = [];
+
+  if (typeof pair.currentRoundTripTime === "number") {
+    lines.push(
+      "RTT: " +
+      fmt(pair.currentRoundTripTime * 1000) +
+      " ms"
     );
+  }
 
-    $("previewNotice").classList.add(
-        "hidden"
+  if (
+    typeof pair.availableOutgoingBitrate === "number"
+  ) {
+    lines.push(
+      "推定送信帯域: " +
+      fmt(pair.availableOutgoingBitrate / 1e6, 2) +
+      " Mbps"
     );
+  }
 
-    $("startButton").disabled = false;
-    $("stopButton").disabled = true;
+  if (local) {
+    lines.push(
+      "通信: " +
+      (local.candidateType || "?") +
+      " / " +
+      (local.protocol || "?")
+    );
+  }
 
-    for (const id of [
-        "role",
-        "roomId",
-        "resolution",
-        "captureFPS",
-        "codecMode",
-        "bitrateMode",
-        "qualityMode",
-        "shareAudio"
-    ]) {
+  if (remote) {
+    lines.push(
+      "相手候補: " +
+      (remote.candidateType || "?")
+    );
+  }
 
-        $(id).disabled = false;
+  return lines.join("\n");
+}
+
+// ==================================================
+// SENDER STATS
+// ==================================================
+
+async function updateSenderStats() {
+  if (mode !== "sender") return [];
+
+  const lines = [];
+  const reports = [];
+
+  const track = localStream?.getVideoTracks()[0];
+
+  if (track) {
+    const settings = track.getSettings();
+
+    lines.push(
+      "【キャプチャ】" +
+      "\n解像度: " +
+      (settings.width || "?") +
+      "×" +
+      (settings.height || "?") +
+      "\n設定FPS: " +
+      (settings.frameRate ?? "?") +
+      "\ncontentHint: " +
+      track.contentHint
+    );
+  }
+
+  for (const [id, pc] of senderPeers) {
+    if (pc.signalingState === "closed") continue;
+
+    try {
+      const stats = await pc.getStats();
+
+      const report =
+        getVideoReport(stats, "outbound-rtp");
+
+      if (!report) continue;
+
+      const old = senderHistory.get(id);
+
+      const seconds = old
+        ? (report.timestamp - old.timestamp) / 1000
+        : 0;
+
+      const mbps = old
+        ? rate(
+            report.bytesSent,
+            old.bytes,
+            seconds
+          )
+        : null;
+
+      const encodedFPS = old
+        ? rate(
+            report.framesEncoded,
+            old.framesEncoded,
+            seconds
+          )
+        : null;
+
+      let encodeMs = null;
+
+      if (
+        old &&
+        typeof report.totalEncodeTime === "number" &&
+        typeof old.totalEncodeTime === "number"
+      ) {
+        const frames =
+          report.framesEncoded - old.framesEncoded;
+
+        if (frames > 0) {
+          encodeMs =
+            (
+              report.totalEncodeTime -
+              old.totalEncodeTime
+            ) * 1000 / frames;
+        }
+      }
+
+      senderHistory.set(id, {
+        id: report.id,
+        timestamp: report.timestamp,
+        bytes: report.bytesSent,
+        framesEncoded: report.framesEncoded,
+        totalEncodeTime: report.totalEncodeTime
+      });
+
+      const state = peerQuality.get(id);
+
+      lines.push(
+        "\n【送信先 " + id.slice(0, 8) + "】" +
+        "\n状態: " + pc.connectionState +
+        "\n解像度: " +
+        (report.frameWidth || "?") +
+        "×" +
+        (report.frameHeight || "?") +
+        "\nCodec: " + codecName(stats, report) +
+        "\nWebRTC FPS: " +
+        (report.framesPerSecond ?? "?") +
+        "\n実測エンコードFPS: " +
+        fmt(encodedFPS) +
+        "\n通信速度: " +
+        fmt(mbps === null ? null : mbps * 8 / 1e6, 2) +
+        " Mbps" +
+        "\n平均エンコード時間: " +
+        fmt(encodeMs, 2) +
+        " ms" +
+        "\n品質制限理由: " +
+        (report.qualityLimitationReason || "不明") +
+        "\n自動画質目標: " +
+        (
+          state?.height === Infinity
+            ? "元画質"
+            : (state?.height ?? "?") + "p"
+        ) +
+        (
+          state?.disabled
+            ? "（自動調整停止）"
+            : ""
+        ) +
+        "\n" +
+        getConnectionInfo(stats)
+      );
+
+      reports.push({
+        id,
+        pc,
+        report,
+        encodedFPS
+      });
+
+    } catch (err) {
+      console.warn("Sender stats:", err);
+    }
+  }
+
+  $("senderStats").textContent =
+    lines.join("\n") || "接続端末なし";
+
+  return reports;
+}
+
+// ==================================================
+// RECEIVER STATS
+// ==================================================
+
+async function updateReceiverStats() {
+  if (
+    mode !== "receiver" ||
+    !receiverPeer ||
+    receiverPeer.signalingState === "closed"
+  ) {
+    return;
+  }
+
+  try {
+    const stats = await receiverPeer.getStats();
+
+    const report =
+      getVideoReport(stats, "inbound-rtp");
+
+    if (!report) return;
+
+    const old = receiverHistory;
+
+    const seconds = old
+      ? (report.timestamp - old.timestamp) / 1000
+      : 0;
+
+    const mbps = old
+      ? rate(
+          report.bytesReceived,
+          old.bytes,
+          seconds
+        )
+      : null;
+
+    const receivedFPS = old
+      ? rate(
+          report.framesReceived,
+          old.framesReceived,
+          seconds
+        )
+      : null;
+
+    const decodedFPS = old
+      ? rate(
+          report.framesDecoded,
+          old.framesDecoded,
+          seconds
+        )
+      : null;
+
+    receiverHistory = {
+      timestamp: report.timestamp,
+      bytes: report.bytesReceived,
+      framesReceived: report.framesReceived,
+      framesDecoded: report.framesDecoded
+    };
+
+    $("receiverStats").textContent =
+      "【実測受信】" +
+      "\n状態: " + receiverPeer.connectionState +
+      "\n解像度: " +
+      (report.frameWidth || video.videoWidth || "?") +
+      "×" +
+      (report.frameHeight || video.videoHeight || "?") +
+      "\nCodec: " + codecName(stats, report) +
+      "\nWebRTC FPS: " +
+      (report.framesPerSecond ?? "?") +
+      "\n実測受信FPS: " +
+      fmt(receivedFPS) +
+      "\n実測デコードFPS: " +
+      fmt(decodedFPS) +
+      "\n通信速度: " +
+      fmt(
+        mbps === null ? null : mbps * 8 / 1e6,
+        2
+      ) +
+      " Mbps" +
+      "\n破棄フレーム: " +
+      (report.framesDropped ?? "?") +
+      "\nパケットロス: " +
+      (report.packetsLost ?? "?") +
+      "\n" +
+      getConnectionInfo(stats);
+
+  } catch (err) {
+    console.warn("Receiver stats:", err);
+  }
+}
+
+// ==================================================
+// FPS-BASED ADAPTIVE QUALITY
+// ==================================================
+
+function lowerQuality(height) {
+  if (height === Infinity) {
+    return 1080;
+  }
+
+  const lower =
+    QUALITY_STEPS.filter(q => q < height);
+
+  return lower.length
+    ? lower[lower.length - 1]
+    : height;
+}
+
+async function adaptiveQuality(reports) {
+  if (
+    mode !== "sender" ||
+    settingsBusy ||
+    $("priority").value !== "maintain-framerate"
+  ) {
+    return;
+  }
+
+  const targetFPS = selectedFPS();
+
+  if (!targetFPS || targetFPS <= 15) return;
+
+  const now = Date.now();
+
+  for (const item of reports) {
+    const {
+      id,
+      pc,
+      encodedFPS
+    } = item;
+
+    const state = peerQuality.get(id);
+
+    if (
+      !state ||
+      state.disabled ||
+      pc.connectionState !== "connected" ||
+      encodedFPS === null
+    ) {
+      continue;
     }
 
-    $("stats").textContent =
-        "停止しました";
+    if (state.pendingTest) {
+      const test = state.pendingTest;
 
-    setStatus(
-        "停止しました"
-    );
+      if (now - test.start < 6000) {
+        continue;
+      }
+
+      const improvement =
+        encodedFPS - test.beforeFPS;
+
+      state.pendingTest = null;
+
+      if (improvement < 3) {
+        state.height = test.previousHeight;
+        state.disabled = true;
+
+        try {
+          await configurePeer(id);
+        } catch (err) {
+          console.warn("Quality rollback:", err);
+        }
+
+        console.log(
+          "画質を下げてもFPS改善なし。自動調整停止:",
+          id
+        );
+      }
+
+      state.lastChange = now;
+      continue;
+    }
+
+    if (now - state.lastChange < 10000) {
+      continue;
+    }
+
+    if (encodedFPS >= targetFPS - 5) {
+      continue;
+    }
+
+    const next = lowerQuality(state.height);
+
+    if (next === state.height) {
+      state.disabled = true;
+      continue;
+    }
+
+    const previousHeight = state.height;
+
+    state.height = next;
+    state.lastChange = now;
+
+    try {
+      await configurePeer(id);
+
+      state.pendingTest = {
+        previousHeight,
+        beforeFPS: encodedFPS,
+        start: now
+      };
+
+    } catch (err) {
+      state.height = previousHeight;
+      state.disabled = true;
+
+      console.warn("Adaptive quality:", err);
+    }
+  }
 }
+
+// ==================================================
+// TIMER
+// ==================================================
+
+setInterval(async () => {
+  if (!running || statsBusy) return;
+
+  statsBusy = true;
+
+  try {
+    if (mode === "sender") {
+      const reports = await updateSenderStats();
+      await adaptiveQuality(reports);
+    }
+
+    if (mode === "receiver") {
+      await updateReceiverStats();
+    }
+
+  } catch (err) {
+    console.warn("Stats:", err);
+  } finally {
+    statsBusy = false;
+  }
+}, 1000);
+
+updateSettingsInfo();
 
 </script>
 
