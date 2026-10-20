@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-<title>WebRTC Caster v22.1</title>
+<title>WebRTC Caster v22.2</title>
 
 <style>
 * {
@@ -230,8 +230,8 @@ pre {
 
 <main>
 
-<h1>📡 WebRTC Caster v22.1</h1>
-<p class="subtitle">FPS Control Fix Edition</p>
+<h1>📡 WebRTC Caster v22.2</h1>
+<p class="subtitle">Capture FPS Control Edition</p>
 
 <div id="status" class="status">
 接続準備中...
@@ -423,12 +423,12 @@ pre {
   </button>
 
   <p class="small">
-    FPS制限はWebRTC送信側で設定します。
-    キャプチャ側にはFPS制限を指定しません。
+    FPS・画質の変更ではキャプチャ制約を更新し、
+    WebRTC接続を作り直します。
   </p>
 
   <div id="resolutionInfo" class="status">
-    画面共有を開始すると解像度情報を表示します。
+    画面共有を開始すると設定情報を表示します。
   </div>
 
 </section>
@@ -533,6 +533,8 @@ let localStream = null;
 let appliedSettings = null;
 
 let originalCaptureSize = null;
+let initialCaptureFPS = null;
+
 let captureWarning = "";
 
 let senderStarting = false;
@@ -688,11 +690,11 @@ function readSettings() {
 }
 
 /*
- * FPS制限はWebRTC送信側でのみ使用。
+ * 数値FPSだけを返す。
  *
- * auto / browser は上限なし。
+ * 自動・制限なしではnull。
  */
-function senderFPS(settings) {
+function requestedFPS(settings) {
   if (
     settings.fps === "auto" ||
     settings.fps === "browser"
@@ -717,36 +719,49 @@ function targetSize(settings) {
 }
 
 /* ========================================
-   v22.1 キャプチャ設定
+   v22.2 初期キャプチャ設定
 ======================================== */
 
 /*
- * 重要：
- *
- * 初回画面共有時にはframeRateを指定しない。
- *
- * FPSはRTCRtpSender側で制限する。
+ * 画面共有開始時から
+ * 解像度とFPSの両方を指定する。
  */
 function initialCaptureConstraints(settings) {
-  const size = targetSize(settings);
+  const video = {};
 
-  if (!size) {
-    return true;
+  const size = targetSize(settings);
+  const fps = requestedFPS(settings);
+
+  if (size) {
+    video.width = {
+      ideal: size.width
+    };
+
+    video.height = {
+      ideal: size.height
+    };
   }
 
-  return {
-    width: {
-      ideal: size.width
-    },
-    height: {
-      ideal: size.height
-    }
-  };
+  /*
+   * v22.2
+   *
+   * FPSを明示的に要求する。
+   */
+  if (fps !== null) {
+    video.frameRate = {
+      ideal: fps
+    };
+  }
+
+  return Object.keys(video).length
+    ? video
+    : true;
 }
 
-/*
- * 現在のキャプチャ情報
- */
+/* ========================================
+   キャプチャ情報
+======================================== */
+
 function currentCaptureSize() {
   const track = localStream?.getVideoTracks()[0];
 
@@ -761,11 +776,10 @@ function currentCaptureSize() {
   };
 }
 
-/*
- * キャプチャ解像度の変更
- *
- * FPS制約は設定しない。
- */
+/* ========================================
+   v22.2 キャプチャ設定変更
+======================================== */
+
 async function applyCaptureConstraints(settings) {
   const track = localStream?.getVideoTracks()[0];
 
@@ -776,9 +790,13 @@ async function applyCaptureConstraints(settings) {
   captureWarning = "";
 
   const size = targetSize(settings);
+  const fps = requestedFPS(settings);
 
   const constraints = {};
 
+  /*
+   * 解像度設定
+   */
   if (size) {
     constraints.width = {
       ideal: size.width
@@ -789,8 +807,9 @@ async function applyCaptureConstraints(settings) {
     };
   } else {
     /*
-     * 元画質に戻す場合は、
-     * getCapabilities()で取得できる
+     * 元画質の場合
+     *
+     * キャプチャトラックが提供する
      * 最大解像度を希望する。
      */
     const capabilities =
@@ -822,11 +841,19 @@ async function applyCaptureConstraints(settings) {
   }
 
   /*
-   * frameRateを含めない制約セットを適用。
+   * v22.2
    *
-   * applyConstraints()は以前の制約セットを
-   * 新しいセットで置き換える。
+   * FPS設定をキャプチャ側にも適用。
+   *
+   * 自動・制限なしの場合はframeRateを
+   * 指定せず、以前の制約を解除する。
    */
+  if (fps !== null) {
+    constraints.frameRate = {
+      ideal: fps
+    };
+  }
+
   try {
     await track.applyConstraints(constraints);
   } catch (error) {
@@ -838,6 +865,22 @@ async function applyCaptureConstraints(settings) {
 
   const actual = track.getSettings();
 
+  /*
+   * 希望FPSと実際の設定FPSを比較。
+   */
+  if (
+    fps !== null &&
+    typeof actual.frameRate === "number" &&
+    Math.abs(actual.frameRate - fps) > 0.5
+  ) {
+    captureWarning +=
+      `\n希望FPS: ${fps}` +
+      ` / 実際の設定FPS: ${actual.frameRate}`;
+  }
+
+  /*
+   * 解像度も確認。
+   */
   if (
     size &&
     (
@@ -845,21 +888,22 @@ async function applyCaptureConstraints(settings) {
       actual.height > size.height
     )
   ) {
-    captureWarning =
-      "希望解像度より大きいため、WebRTC側でも縮小を要求します。";
+    captureWarning +=
+      "\n希望解像度より大きいため、" +
+      "WebRTC側でも縮小を要求します。";
   }
 
   updateResolutionInfo();
 }
 
 /* ========================================
-   解像度情報表示
+   v22.2 設定情報表示
 ======================================== */
 
 function updateResolutionInfo() {
-  if (!localStream) {
+  if (!localStream || !appliedSettings) {
     $("resolutionInfo").textContent =
-      "画面共有を開始すると解像度情報を表示します。";
+      "画面共有を開始すると設定情報を表示します。";
 
     return;
   }
@@ -869,19 +913,23 @@ function updateResolutionInfo() {
   if (!actual) return;
 
   const target = targetSize(appliedSettings);
+  const fps = requestedFPS(appliedSettings);
 
-  let text = "";
+  let text =
+`========== キャプチャ開始直後 ==========
 
-  if (originalCaptureSize) {
-    text +=
-`画面共有開始直後:
-${originalCaptureSize.width}×${originalCaptureSize.height}
+解像度:
+${originalCaptureSize
+  ? `${originalCaptureSize.width}×${originalCaptureSize.height}`
+  : "不明"}
 
-`;
-  }
+設定FPS:
+${initialCaptureFPS ?? "不明"}
 
-  text +=
-`現在のキャプチャ解像度:
+
+========== 現在のキャプチャ ==========
+
+解像度:
 ${actual.width}×${actual.height}
 
 希望解像度:
@@ -889,22 +937,28 @@ ${target
   ? `${target.width}×${target.height}`
   : "元画質"}
 
-キャプチャ設定FPS:
+希望FPS:
+${fps ?? "ブラウザ自動"}
+
+実際の設定FPS:
 ${actual.fps ?? "不明"}
 
 WebRTC送信FPS上限:
-${senderFPS(appliedSettings) ?? "制限なし"}
+${fps ?? "制限なし"}
 `;
 
-  if (captureWarning) {
-    text += `\n⚠ ${captureWarning}`;
+  if (captureWarning.trim()) {
+    text +=
+`\n⚠ 設定確認
+${captureWarning.trim()}`;
   } else {
-    text += "\n✅ 解像度設定を確認しました";
+    text +=
+`\n✅ キャプチャ設定を確認しました`;
   }
 
   text +=
-`\n\n※キャプチャ設定FPSは実測FPSではありません。
-実際のFPSは送信統計を確認してください。`;
+`\n\n※設定FPSは実測FPSではありません。
+実際のフレーム数は送信統計で確認できます。`;
 
   $("resolutionInfo").textContent = text;
 }
@@ -984,7 +1038,7 @@ function setCodecPreference(transceiver, codec) {
 }
 
 /* ========================================
-   v22.1 WebRTC送信設定
+   v22.2 WebRTC送信設定
 ======================================== */
 
 async function configureSender(sender, settings, track) {
@@ -997,13 +1051,13 @@ async function configureSender(sender, settings, track) {
   const encoding = params.encodings[0];
 
   /*
-   * 解像度設定
+   * 解像度
    */
   encoding.scaleResolutionDownBy =
     calculateScale(settings);
 
   /*
-   * ビットレート設定
+   * ビットレート
    */
   if (settings.bitrate !== "auto") {
     encoding.maxBitrate = Math.min(
@@ -1015,11 +1069,11 @@ async function configureSender(sender, settings, track) {
   }
 
   /*
-   * v22.1
+   * FPS
    *
-   * FPS制限はここだけで設定。
+   * キャプチャ側と同じ希望値を使用。
    */
-  const fps = senderFPS(settings);
+  const fps = requestedFPS(settings);
 
   if (fps !== null) {
     encoding.maxFramerate = fps;
@@ -1057,9 +1111,10 @@ function closeSenderPeer(receiverId) {
   senderHistory.delete(receiverId);
 }
 
-/*
- * 新しいOfferを生成
- */
+/* ========================================
+   Offer生成
+======================================== */
+
 async function makeOffer(receiverId) {
   if (
     role !== "sender" ||
@@ -1192,9 +1247,9 @@ async function startSender() {
 
   try {
     /*
-     * v22.1
+     * v22.2
      *
-     * frameRateは指定しない。
+     * 解像度とFPSを最初から指定。
      */
     localStream =
       await navigator.mediaDevices.getDisplayMedia({
@@ -1208,12 +1263,17 @@ async function startSender() {
       throw new Error("映像トラックを取得できませんでした");
     }
 
+    /*
+     * キャプチャ開始直後の状態を記録。
+     */
     const initial = track.getSettings();
 
     originalCaptureSize = {
       width: initial.width,
       height: initial.height
     };
+
+    initialCaptureFPS = initial.frameRate ?? null;
 
     role = "sender";
     currentRoom = room;
@@ -1225,6 +1285,9 @@ async function startSender() {
       stopLocal(true);
     };
 
+    /*
+     * キャプチャ設定を再確認・適用。
+     */
     await applyCaptureConstraints(settings);
 
     updatePreview();
@@ -1254,6 +1317,7 @@ async function startSender() {
     appliedSettings = null;
 
     originalCaptureSize = null;
+    initialCaptureFPS = null;
 
     status(`画面共有エラー: ${error.message}`);
 
@@ -1288,6 +1352,8 @@ function stopLocal(sendLeave = true) {
   appliedSettings = null;
 
   originalCaptureSize = null;
+  initialCaptureFPS = null;
+
   captureWarning = "";
 
   $("localVideo").srcObject = null;
@@ -1310,7 +1376,7 @@ function stopLocal(sendLeave = true) {
 }
 
 /* ========================================
-   配信設定変更
+   設定変更
 ======================================== */
 
 async function applySettings() {
@@ -1332,8 +1398,9 @@ async function applySettings() {
     const settings = readSettings();
 
     /*
-     * キャプチャ解像度を変更。
-     * FPS制約は指定しない。
+     * v22.2
+     *
+     * 解像度とFPSの両方を変更。
      */
     await applyCaptureConstraints(settings);
 
@@ -1455,9 +1522,6 @@ async function handleOffer(data) {
 
   const session = receiverSession;
 
-  /*
-   * 古い世代のOfferを無視。
-   */
   if (
     receiverGeneration !== null &&
     data.generation <= receiverGeneration
@@ -1586,9 +1650,6 @@ async function handleSignal(data) {
     }
 
     case "joined": {
-      /*
-       * サーバーへの参加完了通知。
-       */
       if (data.role !== role) break;
       if (data.room !== currentRoom) break;
 
@@ -1768,9 +1829,6 @@ async function handleSignal(data) {
     case "error": {
       status(`エラー: ${data.message}`);
 
-      /*
-       * 送信開始時のルーム重複などに対応。
-       */
       if (
         role === "sender" &&
         peers.size === 0
@@ -1793,9 +1851,6 @@ function renderRooms() {
 
   container.replaceChildren();
 
-  /*
-   * 自分の配信ルームは表示しない。
-   */
   const visibleRooms = activeRoomList.filter(room =>
     !(
       role === "sender" &&
@@ -1947,9 +2002,6 @@ function getNetworkInfo(reports) {
   };
 }
 
-/*
- * フレーム数の増分からFPSを計算。
- */
 function deltaRate(report, history, key) {
   const now = report.timestamp;
   const count = report[key];
@@ -1977,9 +2029,6 @@ function deltaRate(report, history, key) {
   ).toFixed(1);
 }
 
-/*
- * 通信速度Mbps
- */
 function bitrateMbps(report, history, key) {
   const now = report.timestamp;
   const count = report[key];
@@ -2020,7 +2069,7 @@ async function updateSenderStats() {
 
   const track = localStream.getVideoTracks()[0];
 
-  if (!track) return;
+  if (!track || !appliedSettings) return;
 
   const settings = track.getSettings();
 
@@ -2030,8 +2079,12 @@ async function updateSenderStats() {
 `========== キャプチャ ==========
 実際の解像度: ${settings.width}×${settings.height}
 希望解像度: ${target ? `${target.width}×${target.height}` : "元画質"}
-キャプチャ設定FPS: ${settings.frameRate ?? "?"}
-WebRTC送信FPS上限: ${senderFPS(appliedSettings) ?? "制限なし"}
+
+キャプチャ開始直後FPS: ${initialCaptureFPS ?? "?"}
+希望FPS: ${requestedFPS(appliedSettings) ?? "自動"}
+現在の設定FPS: ${settings.frameRate ?? "?"}
+WebRTC送信FPS上限: ${requestedFPS(appliedSettings) ?? "制限なし"}
+
 contentHint: ${track.contentHint}
 トラック状態: ${track.readyState}
 
