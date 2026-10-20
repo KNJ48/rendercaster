@@ -2,9 +2,8 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-
-<title>WebRTC Caster v20</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebRTC Caster v21</title>
 
 <style>
 * {
@@ -13,7 +12,6 @@
 
 body {
   margin: 0;
-  padding: 20px;
   background: #101114;
   color: #eee;
   font-family: system-ui, sans-serif;
@@ -22,13 +20,15 @@ body {
 main {
   max-width: 900px;
   margin: auto;
+  padding: 20px;
 }
 
 h1 {
-  margin-bottom: 5px;
+  margin-bottom: 4px;
 }
 
-h2 {
+.subtitle {
+  color: #999;
   margin-top: 0;
 }
 
@@ -40,32 +40,44 @@ section {
   margin: 16px 0;
 }
 
-input, select, button {
-  font: inherit;
-  padding: 11px;
-  border-radius: 8px;
+h2 {
+  margin-top: 0;
+  font-size: 19px;
 }
 
-input, select {
-  background: #292c33;
-  color: white;
-  border: 1px solid #555;
+label {
+  display: block;
+  margin: 12px 0;
 }
 
-input[type="text"], select {
+input,
+select,
+textarea {
+  display: block;
   width: 100%;
+  background: #111318;
+  color: white;
+  border: 1px solid #444;
+  border-radius: 7px;
+  padding: 10px;
+  margin-top: 6px;
+  font: inherit;
 }
 
-select {
-  margin: 8px 0 16px;
+textarea {
+  resize: vertical;
+  min-height: 65px;
 }
 
 button {
-  border: 0;
-  background: #2868d8;
+  border: none;
+  border-radius: 8px;
   color: white;
+  padding: 11px 16px;
+  margin: 5px 5px 5px 0;
   cursor: pointer;
-  margin: 4px;
+  background: #35598a;
+  font: inherit;
 }
 
 button:hover {
@@ -73,7 +85,7 @@ button:hover {
 }
 
 button:disabled {
-  opacity: .5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
@@ -89,284 +101,269 @@ button:disabled {
   background: #7544c7;
 }
 
-#status, .info {
-  white-space: pre-wrap;
-  background: #20232a;
-  border-radius: 8px;
-  padding: 14px;
-  margin-top: 12px;
-  font-family: monospace;
-  line-height: 1.7;
-  overflow-wrap: anywhere;
-}
-
-#status {
-  color: #90d8ff;
-}
-
-.info {
-  color: #ccc;
-  font-size: 13px;
-}
-
-label {
-  display: block;
-}
-
-.checkbox {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 12px 0;
-}
-
-.checkbox input {
-  width: 18px;
-  height: 18px;
+#applyButton {
+  background: #a36a18;
 }
 
 video {
   width: 100%;
-  max-height: 75vh;
   background: black;
-  object-fit: contain;
-  margin-top: 15px;
   border-radius: 8px;
+  max-height: 65vh;
 }
 
-video:fullscreen {
-  width: 100vw;
-  height: 100vh;
-  max-height: none;
-  margin: 0;
-  border-radius: 0;
-  object-fit: contain;
-}
-
-small {
-  color: #aaa;
-}
-
-.hidden {
-  display: none !important;
-}
-
-.notice {
-  color: #e9c87a;
-  font-size: 13px;
-  margin-top: 12px;
-}
-
-#previewVideo {
+#localVideo {
   max-height: 300px;
 }
 
-@media(max-width:600px) {
-  body {
-    padding: 10px;
-  }
+pre {
+  background: #101114;
+  border: 1px solid #303238;
+  padding: 14px;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
 
-  section {
-    padding: 15px;
-  }
+.status {
+  padding: 12px;
+  border-radius: 8px;
+  background: #252a31;
+  margin: 12px 0;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.row > * {
+  flex: 1;
+  min-width: 150px;
+}
+
+.checkbox {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.checkbox input {
+  width: auto;
+  margin: 0;
+}
+
+.room-card {
+  background: #111318;
+  border: 1px solid #383b43;
+  border-radius: 10px;
+  padding: 15px;
+  margin: 12px 0;
+}
+
+.room-title {
+  font-size: 19px;
+  font-weight: bold;
+  overflow-wrap: anywhere;
+}
+
+.room-name {
+  color: #bbb;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+
+.room-memo {
+  color: #aaa;
+  margin-top: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.room-watch {
+  background: #16834b;
+  margin-top: 12px;
+}
+
+.small {
+  color: #999;
+  font-size: 13px;
+}
+
+.hidden {
+  display: none;
 }
 </style>
 </head>
 
 <body>
-
 <main>
 
-<h1>WebRTC Caster v20</h1>
+<h1>📡 WebRTC Caster v21</h1>
+<p class="subtitle">Live Room Directory Edition</p>
 
-<small>
-Stable Connection & Auto Recovery Edition
-</small>
-
-<div id="status">準備完了</div>
+<div id="status" class="status">接続準備中...</div>
 
 <section>
-  <h2>ルーム</h2>
+  <h2>🖥 画面を送信</h2>
 
-  <input
-    id="room"
-    type="text"
-    value="1111"
-    maxlength="32"
-  >
+  <label>
+    ルームID
+    <input id="roomId" maxlength="100" value="I">
+  </label>
+
+  <label>
+    配信者名
+    <input id="senderName" maxlength="80" value="ゲスト">
+  </label>
+
+  <label>
+    メモ（任意）
+    <textarea id="roomMemo" maxlength="300"></textarea>
+  </label>
+
+  <button id="sendButton">🖥 画面を送信</button>
+  <button id="stopButton" disabled>■ 停止</button>
+
+  <p class="small">
+    配信者名とメモは配信中でも変更できます。
+  </p>
+
+  <div id="sendInfo" class="small"></div>
 </section>
 
 <section>
-  <h2>画面を送信</h2>
+  <h2>👁 送信プレビュー</h2>
+  <video id="localVideo" autoplay muted playsinline></video>
+</section>
 
-  <button id="sendButton">
-    🖥 画面を送信
-  </button>
+<section>
+  <h2>⚙ 配信設定</h2>
 
-  <button id="stopButton">
-    ■ 停止
-  </button>
+  <div class="row">
+    <label>
+      最大画質
+      <select id="resolution">
+        <option value="360">360p</option>
+        <option value="480">480p</option>
+        <option value="720" selected>720p</option>
+        <option value="1080">1080p</option>
+        <option value="native">元画質</option>
+      </select>
+    </label>
 
-  <div id="senderInfo" class="info">
-    未送信
+    <label>
+      FPS
+      <select id="fps">
+        <option value="auto">自動</option>
+        <option value="15">15</option>
+        <option value="30" selected>30</option>
+        <option value="60">60</option>
+        <option value="120">120（実験）</option>
+        <option value="browser">制限なし</option>
+      </select>
+    </label>
   </div>
 
-  <video
-    id="previewVideo"
-    autoplay
-    playsinline
-    muted
-    class="hidden"
-  ></video>
-</section>
+  <div class="row">
+    <label>
+      品質優先度
+      <select id="priority">
+        <option value="maintain-resolution" selected>解像度優先</option>
+        <option value="maintain-framerate">FPS優先</option>
+        <option value="balanced">バランス</option>
+      </select>
+    </label>
 
-<section>
-  <h2>配信設定</h2>
+    <label>
+      コーデック
+      <select id="codec">
+        <option value="auto">ブラウザ自動</option>
+        <option value="h264" selected>H.264優先</option>
+        <option value="vp8">VP8優先</option>
+      </select>
+    </label>
+  </div>
 
-  <label>最大画質</label>
+  <div class="row">
+    <label>
+      映像の種類
+      <select id="hint">
+        <option value="motion" selected>動き重視</option>
+        <option value="text">文字重視</option>
+        <option value="detail">細部重視</option>
+      </select>
+    </label>
 
-  <select id="quality">
-    <option value="360">360p</option>
-    <option value="480">480p</option>
-    <option value="720" selected>720p</option>
-    <option value="1080">1080p</option>
-    <option value="native">元画質</option>
-  </select>
-
-  <label>FPS</label>
-
-  <select id="fpsMode">
-    <option value="auto">ブラウザ自動</option>
-    <option value="15">15 FPS</option>
-    <option value="30" selected>30 FPS</option>
-    <option value="60">60 FPS</option>
-    <option value="120">120 FPS（実験）</option>
-    <option value="browser">制限なし</option>
-  </select>
-
-  <label>品質優先度</label>
-
-  <select id="priority">
-    <option value="maintain-resolution" selected>
-      解像度優先
-    </option>
-    <option value="maintain-framerate">
-      FPS優先
-    </option>
-    <option value="balanced">
-      バランス
-    </option>
-  </select>
-
-  <label>コーデック</label>
-
-  <select id="codecMode">
-    <option value="auto">ブラウザ自動</option>
-    <option value="h264" selected>H.264優先</option>
-    <option value="vp8">VP8優先</option>
-  </select>
-
-  <label>映像の種類</label>
-
-  <select id="contentHint">
-    <option value="motion" selected>
-      動き優先
-    </option>
-    <option value="text">
-      文字優先
-    </option>
-    <option value="detail">
-      細部優先
-    </option>
-  </select>
-
-  <label>ビットレート</label>
-
-  <select id="bitrateMode">
-    <option value="auto">ブラウザ自動</option>
-    <option value="20000000" selected>
-      最大20Mbps
-    </option>
-  </select>
+    <label>
+      ビットレート
+      <select id="bitrate">
+        <option value="20000000" selected>最大20Mbps</option>
+        <option value="auto">ブラウザ自動</option>
+      </select>
+    </label>
+  </div>
 
   <label class="checkbox">
-    <input
-      type="checkbox"
-      id="shareAudio"
-      checked
-    >
-    音声を共有
+    <input type="checkbox" id="audioShare" checked>
+    音声共有
   </label>
 
   <label class="checkbox">
-    <input
-      type="checkbox"
-      id="showPreview"
-    >
-    送信側プレビューを表示
+    <input type="checkbox" id="preview">
+    送信プレビューを表示
   </label>
 
-  <button id="applySettings">
+  <button id="applyButton" disabled>
     🔄 設定を適用・再接続
   </button>
 
-  <div id="settingsInfo" class="info">
-    設定待機中
-  </div>
-
-  <p class="notice">
-    設定変更時は受信側が自動再接続します。
-    音声共有設定の変更は次回の画面共有開始時に反映されます。
+  <p class="small">
+    配信中の設定変更ではWebRTC接続のみ作り直します。
+    画面共有とルームは維持されます。
   </p>
 </section>
 
 <section>
-  <h2>送信統計</h2>
-
-  <div id="senderStats" class="info">
-    接続端末なし
-  </div>
+  <h2>📊 送信統計</h2>
+  <pre id="senderStats">未配信</pre>
 </section>
 
 <section>
-  <h2>画面を受信</h2>
+  <h2>📺 画面を受信</h2>
 
-  <button id="receiveButton">
-    📺 画面を受信
-  </button>
+  <button id="receiveButton">📺 画面を受信</button>
+  <button id="leaveButton" disabled>■ 受信停止</button>
+  <button id="fullscreen">⛶ 全画面</button>
+  <button id="muteButton">🔇 ミュート中</button>
 
-  <button id="fullscreen">
-    ⛶ 全画面
-  </button>
-
-  <button id="muteButton">
-    🔇 ミュート中
-  </button>
-
-  <video
-    id="video"
-    autoplay
-    playsinline
-    muted
-  ></video>
-
-  <div id="receiverStats" class="info">
-    未接続
-  </div>
+  <video id="remoteVideo" autoplay playsinline muted></video>
 </section>
 
 <section>
-  <h2>接続監視</h2>
+  <h2>📊 受信統計</h2>
+  <pre id="receiverStats">未接続</pre>
+</section>
 
-  <div id="healthInfo" class="info">
-    監視待機中
-  </div>
+<section>
+  <h2>🔧 接続監視</h2>
+  <pre id="connectionStats">準備中</pre>
+</section>
 
-  <small>
-    接続失敗や長時間の切断を検出した場合、
-    WebRTC接続の自動復旧を試みます。
-    静止画によるフレーム停止だけでは再接続しません。
-  </small>
+<section>
+  <h2>📡 配信中のルーム一覧</h2>
+
+  <p id="roomCount" class="small">
+    読み込み中...
+  </p>
+
+  <div id="roomList"></div>
+
+  <p class="small">
+    配信ルームはリアルタイムで自動更新されます。
+  </p>
 </section>
 
 </main>
@@ -374,44 +371,9 @@ Stable Connection & Auto Recovery Edition
 <script>
 "use strict";
 
-// ==================================================
-// STATE
-// ==================================================
-
 const $ = id => document.getElementById(id);
 
-const video = $("video");
-const previewVideo = $("previewVideo");
-
-const peers = new Map();
-const senderHistory = new Map();
-
-const pendingSenderICE = new Map();
-const pendingReceiverICE = new Map();
-
-let receiverPeer = null;
-let receiverGeneration = null;
-let receiverHistory = null;
-
-let socket = null;
-let localStream = null;
-
-let mode = null;
-let running = false;
-
-let sessionId = 0;
-let generationCounter = 0;
-
-let appliedSettings = null;
-let applying = false;
-let statsBusy = false;
-
-let receiverDisconnectedSince = 0;
-let receiverLastRestart = 0;
-let receiverConnectedAt = 0;
-
 const MAX_BITRATE = 20_000_000;
-
 const DISCONNECT_TIMEOUT = 8000;
 const RESTART_COOLDOWN = 15000;
 
@@ -422,170 +384,162 @@ const rtcConfig = {
   ]
 };
 
-// ==================================================
-// BASIC
-// ==================================================
+let ws = null;
 
-function status(text) {
-  console.log(text);
-  $("status").textContent = text;
+let role = null;
+let currentRoom = null;
+
+let localStream = null;
+let appliedSettings = null;
+
+let receiverPeer = null;
+let receiverGeneration = null;
+let receiverHistory = null;
+
+let generationCounter = 0;
+
+const peers = new Map();
+const senderHistory = new Map();
+
+const pendingSenderICE = new Map();
+const pendingReceiverICE = new Map();
+
+let activeRoomList = [];
+let suggestedRoom = "I";
+
+let lastReceiverRestart = 0;
+let receiverDisconnectedAt = 0;
+
+function status(message) {
+  $("status").textContent = message;
 }
 
 function signal(data) {
-  if (socket?.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(data));
-    return true;
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(data));
   }
-
-  return false;
 }
 
-function room() {
-  const value = $("room").value.trim();
+function connectWS() {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
 
-  if (!/^[A-Za-z0-9_-]{1,32}$/.test(value)) {
-    throw new Error("ルームIDが無効です");
-  }
+  ws = new WebSocket(`${protocol}//${location.host}/signal`);
 
-  return value;
+  ws.onopen = () => {
+    status("シグナリング接続完了");
+  };
+
+  ws.onclose = () => {
+    status("サーバーとの接続が切断されました");
+
+    stopLocal(false);
+    stopReceiver(false);
+  };
+
+  ws.onerror = () => {
+    status("WebSocketエラー");
+  };
+
+  ws.onmessage = async event => {
+    let data;
+
+    try {
+      data = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    try {
+      await handleSignal(data);
+    } catch (error) {
+      console.error(error);
+      status(`通信処理エラー: ${error.message}`);
+    }
+  };
 }
 
-function fmt(value, digits = 1) {
-  return typeof value === "number" &&
-    Number.isFinite(value)
-      ? value.toFixed(digits)
-      : "計測中";
-}
-
-function rate(current, previous, seconds) {
-  if (
-    typeof current !== "number" ||
-    typeof previous !== "number" ||
-    seconds <= 0
-  ) {
-    return null;
-  }
-
-  const diff = current - previous;
-  return diff >= 0 ? diff / seconds : null;
-}
-
-function createPeer() {
-  return new RTCPeerConnection(rtcConfig);
-}
-
-// ==================================================
-// SETTINGS
-// ==================================================
-
-function getSettings() {
+function readSettings() {
   return {
-    quality: $("quality").value,
-    fps: $("fpsMode").value,
+    resolution: $("resolution").value,
+    fps: $("fps").value,
     priority: $("priority").value,
-    codec: $("codecMode").value,
-    hint: $("contentHint").value,
-    bitrate: $("bitrateMode").value,
-    audio: $("shareAudio").checked
+    codec: $("codec").value,
+    hint: $("hint").value,
+    bitrate: $("bitrate").value,
+    audio: $("audioShare").checked,
+    preview: $("preview").checked
   };
 }
 
 function captureFPS(settings) {
-  if (
-    settings.fps === "auto" ||
-    settings.fps === "browser"
-  ) {
+  if (settings.fps === "auto" || settings.fps === "browser") {
     return 60;
   }
 
   return Number(settings.fps);
 }
 
-function maxHeight(settings) {
-  return settings.quality === "native"
-    ? Infinity
-    : Number(settings.quality);
+function resolutionHeight(settings) {
+  if (settings.resolution === "native") return null;
+  return Number(settings.resolution);
 }
 
-function updateSettingsInfo() {
-  const s = getSettings();
+function updatePreview() {
+  const enabled = $("preview").checked;
 
-  $("settingsInfo").textContent =
-    "画質: " + s.quality +
-    "\nFPS: " + s.fps +
-    "\n優先度: " + s.priority +
-    "\nCodec: " + s.codec +
-    "\n映像ヒント: " + s.hint +
-    "\n帯域: " +
-    (s.bitrate === "auto"
-      ? "自動"
-      : "最大20Mbps");
+  $("localVideo").style.display = enabled ? "block" : "none";
+
+  if (enabled && localStream) {
+    $("localVideo").srcObject = localStream;
+  } else {
+    $("localVideo").srcObject = null;
+  }
 }
 
-// ==================================================
-// CODEC
-// ==================================================
+function updateButtons() {
+  const sending = role === "sender";
+  const receiving = role === "receiver";
 
-function applyCodec(pc, mode) {
-  if (mode === "auto") return;
+  $("sendButton").disabled = sending;
+  $("stopButton").disabled = !sending;
+  $("applyButton").disabled = !sending;
 
-  const transceiver =
-    pc.getTransceivers().find(t =>
-      t.sender.track?.kind === "video"
-    );
+  $("receiveButton").disabled = receiving;
+  $("leaveButton").disabled = !receiving;
 
-  if (!transceiver?.setCodecPreferences) return;
-
-  const caps =
-    RTCRtpSender.getCapabilities?.("video");
-
-  if (!caps?.codecs) return;
-
-  const mime =
-    mode === "h264"
-      ? "video/h264"
-      : "video/vp8";
-
-  const preferred = caps.codecs.filter(c =>
-    c.mimeType.toLowerCase() === mime
-  );
-
-  if (!preferred.length) return;
-
-  const others = caps.codecs.filter(c =>
-    c.mimeType.toLowerCase() !== mime
-  );
-
-  transceiver.setCodecPreferences([
-    ...preferred,
-    ...others
-  ]);
+  $("roomId").disabled = sending || receiving;
 }
 
-// ==================================================
-// VIDEO PARAMETERS
-// ==================================================
+function setCodecPreference(transceiver, codec) {
+  if (codec === "auto") return;
 
-async function configureSender(sender, settings) {
-  if (sender.track?.kind !== "video") return;
+  const capabilities = RTCRtpSender.getCapabilities?.("video");
+  if (!capabilities) return;
 
-  const source = sender.track.getSettings();
+  const preferred = [];
+  const others = [];
 
-  const width = source.width || 1280;
-  const height = source.height || 720;
+  for (const item of capabilities.codecs) {
+    const mime = item.mimeType.toLowerCase();
 
-  const target = maxHeight(settings);
+    const match =
+      codec === "h264"
+        ? mime === "video/h264"
+        : mime === "video/vp8";
 
-  let scale = 1;
-
-  if (Number.isFinite(target)) {
-    scale = Math.max(
-      1,
-      height / target,
-      width / (target * 16 / 9)
-    );
+    if (match) {
+      preferred.push(item);
+    } else {
+      others.push(item);
+    }
   }
 
+  if (preferred.length) {
+    transceiver.setCodecPreferences([...preferred, ...others]);
+  }
+}
+
+async function configureSender(sender, settings, track) {
   const params = sender.getParameters();
 
   if (!params.encodings?.length) {
@@ -594,36 +548,35 @@ async function configureSender(sender, settings) {
 
   const encoding = params.encodings[0];
 
-  encoding.scaleResolutionDownBy = scale;
+  encoding.scaleResolutionDownBy = 1;
 
-  if (settings.bitrate === "auto") {
-    delete encoding.maxBitrate;
-  } else {
-    encoding.maxBitrate = MAX_BITRATE;
+  if (settings.bitrate !== "auto") {
+    encoding.maxBitrate = Math.min(
+      Number(settings.bitrate),
+      MAX_BITRATE
+    );
   }
 
   if (
-    settings.fps === "auto" ||
-    settings.fps === "browser"
+    settings.fps !== "auto" &&
+    settings.fps !== "browser"
   ) {
-    delete encoding.maxFramerate;
-  } else {
     encoding.maxFramerate = Number(settings.fps);
   }
 
-  params.degradationPreference =
-    settings.priority;
+  params.degradationPreference = settings.priority;
 
-  await sender.setParameters(params);
+  try {
+    await sender.setParameters(params);
+  } catch (error) {
+    console.warn("setParameters:", error);
+  }
+
+  track.contentHint = settings.hint;
 }
 
-// ==================================================
-// CAPTURE CONSTRAINTS
-// ==================================================
-
-async function updateCapture(settings) {
+async function applyCaptureConstraints(settings) {
   const track = localStream?.getVideoTracks()[0];
-
   if (!track) return;
 
   track.contentHint = settings.hint;
@@ -634,362 +587,321 @@ async function updateCapture(settings) {
     }
   };
 
-  const height = maxHeight(settings);
+  const height = resolutionHeight(settings);
 
-  if (Number.isFinite(height)) {
-    constraints.width = {
-      ideal: Math.round(height * 16 / 9)
-    };
-
+  if (height) {
     constraints.height = {
       ideal: height
+    };
+
+    constraints.width = {
+      ideal: Math.round(height * 16 / 9)
     };
   }
 
   try {
     await track.applyConstraints(constraints);
-  } catch (err) {
-    console.warn("Capture constraints:", err);
-    status(
-      "キャプチャ設定の一部を変更できませんでした。\n" +
-      "現在のキャプチャを維持して再接続します。"
-    );
+  } catch (error) {
+    console.warn("applyConstraints:", error);
   }
 }
 
-// ==================================================
-// PREVIEW
-// ==================================================
-
-function updatePreview() {
-  const show =
-    running &&
-    mode === "sender" &&
-    $("showPreview").checked &&
-    !!localStream;
-
-  if (show) {
-    previewVideo.classList.remove("hidden");
-    previewVideo.srcObject = localStream;
-    previewVideo.play().catch(console.warn);
-  } else {
-    previewVideo.pause();
-    previewVideo.srcObject = null;
-    previewVideo.classList.add("hidden");
-  }
-}
-
-$("showPreview").addEventListener(
-  "change",
-  updatePreview
-);
-
-// ==================================================
-// WEBSOCKET
-// ==================================================
-
-function connectSocket() {
-  return new Promise((resolve, reject) => {
-    const protocol =
-      location.protocol === "https:"
-        ? "wss:"
-        : "ws:";
-
-    const ws = new WebSocket(
-      `${protocol}//${location.host}/signal`
-    );
-
-    socket = ws;
-    let settled = false;
-
-    ws.onopen = () => {
-      if (!running || socket !== ws) {
-        ws.close();
-
-        if (!settled) {
-          settled = true;
-          reject(new Error("接続中断"));
-        }
-        return;
-      }
-
-      settled = true;
-      resolve();
-    };
-
-    ws.onerror = () => {
-      if (!settled) {
-        settled = true;
-        reject(new Error("WebSocket接続失敗"));
-      }
-    };
-
-    ws.onclose = () => {
-      if (!settled) {
-        settled = true;
-        reject(new Error("WebSocket接続終了"));
-      }
-
-      if (socket === ws && running) {
-        stop(false);
-        status("サーバーとの接続が切れました");
-      }
-    };
-
-    let queue = Promise.resolve();
-
-    ws.onmessage = event => {
-      queue = queue.then(async () => {
-        if (!running || socket !== ws) return;
-
-        await handleSignal(JSON.parse(event.data));
-      }).catch(err => {
-        console.error("Signal:", err);
-
-        if (running && socket === ws) {
-          status("通信処理エラー: " + err.message);
-        }
-      });
-    };
-  });
-}
-
-// ==================================================
-// SENDER PEER
-// ==================================================
-
-function updateSenderInfo() {
-  let connected = 0;
-
-  for (const entry of peers.values()) {
-    if (entry.pc.connectionState === "connected") {
-      connected++;
-    }
-  }
-
-  $("senderInfo").textContent =
-    mode === "sender"
-      ? "接続中: " + connected + "台" +
-        "\nPeer数: " + peers.size +
-        "\n音声: " +
-        (localStream?.getAudioTracks().length
-          ? "あり"
-          : "なし")
-      : "未送信";
-}
-
-function closeSenderPeer(id) {
-  const entry = peers.get(id);
+function closeSenderPeer(receiverId) {
+  const entry = peers.get(receiverId);
 
   if (entry) {
+    entry.pc.onicecandidate = null;
     entry.pc.close();
+    peers.delete(receiverId);
   }
 
-  peers.delete(id);
-  pendingSenderICE.delete(id);
-  senderHistory.delete(id);
-
-  updateSenderInfo();
+  senderHistory.delete(receiverId);
+  pendingSenderICE.delete(receiverId);
 }
 
-async function createSenderPeer(id) {
-  if (!running || mode !== "sender" || !localStream) {
-    return;
-  }
+async function makeOffer(receiverId) {
+  if (role !== "sender" || !localStream) return;
 
-  closeSenderPeer(id);
+  closeSenderPeer(receiverId);
 
-  const pc = createPeer();
+  const pc = new RTCPeerConnection(rtcConfig);
   const generation = ++generationCounter;
 
   const entry = {
     pc,
     generation,
-    disconnectedSince: 0,
+    disconnectedAt: 0,
     lastRestart: Date.now()
   };
 
-  peers.set(id, entry);
-  pendingSenderICE.set(id, []);
+  peers.set(receiverId, entry);
 
   pc.onicecandidate = event => {
-    if (
-      event.candidate &&
-      peers.get(id) === entry
-    ) {
-      signal({
-        type: "ice",
-        receiverId: id,
-        generation,
-        candidate: event.candidate
-      });
-    }
+    if (!event.candidate) return;
+    if (peers.get(receiverId) !== entry) return;
+
+    signal({
+      type: "ice",
+      receiverId,
+      generation,
+      candidate: event.candidate
+    });
   };
 
   pc.onconnectionstatechange = () => {
-    if (peers.get(id) !== entry) return;
+    if (peers.get(receiverId) !== entry) return;
 
     if (pc.connectionState === "connected") {
-      entry.disconnectedSince = 0;
+      entry.disconnectedAt = 0;
     }
-
-    updateSenderInfo();
   };
 
-  try {
-    for (const track of localStream.getTracks()) {
-      const sender = pc.addTrack(track, localStream);
+  for (const track of localStream.getTracks()) {
+    if (track.kind === "video") {
+      const transceiver = pc.addTransceiver(track, {
+        direction: "sendonly",
+        streams: [localStream]
+      });
 
-      if (track.kind === "video") {
-        try {
-          await configureSender(
-            sender,
-            appliedSettings
-          );
-        } catch (err) {
-          console.warn("Sender settings:", err);
-        }
-      }
+      setCodecPreference(
+        transceiver,
+        appliedSettings.codec
+      );
+
+      await configureSender(
+        transceiver.sender,
+        appliedSettings,
+        track
+      );
+    } else {
+      pc.addTrack(track, localStream);
     }
-
-    if (!running || peers.get(id) !== entry) return;
-
-    applyCodec(pc, appliedSettings.codec);
-
-    const offer = await pc.createOffer();
-
-    if (!running || peers.get(id) !== entry) return;
-
-    await pc.setLocalDescription(offer);
-
-    if (!running || peers.get(id) !== entry) return;
-
-    signal({
-      type: "offer",
-      receiverId: id,
-      generation,
-      sdp: pc.localDescription
-    });
-
-  } catch (err) {
-    if (peers.get(id) === entry) {
-      closeSenderPeer(id);
-    }
-
-    throw err;
-  }
-}
-
-// ==================================================
-// RECEIVER PEER
-// ==================================================
-
-function closeReceiverPeer(clearPending = true) {
-  receiverPeer?.close();
-
-  receiverPeer = null;
-  receiverGeneration = null;
-  receiverHistory = null;
-
-  receiverDisconnectedSince = 0;
-  receiverConnectedAt = 0;
-
-  if (clearPending) {
-    pendingReceiverICE.clear();
   }
 
-  video.pause();
-  video.srcObject = null;
+  const offer = await pc.createOffer();
+
+  await pc.setLocalDescription(offer);
+
+  if (peers.get(receiverId) !== entry) return;
+
+  signal({
+    type: "offer",
+    receiverId,
+    generation,
+    sdp: pc.localDescription
+  });
 }
 
-async function handleOffer(msg) {
-  const generation = msg.generation;
-
-  if (generation === undefined || generation === null) {
+async function startSender() {
+  if (role) {
+    status("先に現在の送受信を停止してください");
     return;
   }
 
-  status("WebRTC接続中...");
+  const room = $("roomId").value;
 
-  closeReceiverPeer(false);
+  if (!room.trim()) {
+    status("ルームIDを入力してください");
+    return;
+  }
 
-  const pc = createPeer();
+  const settings = readSettings();
 
-  receiverPeer = pc;
-  receiverGeneration = generation;
+  try {
+    localStream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        frameRate: {
+          ideal: captureFPS(settings)
+        }
+      },
+      audio: settings.audio
+    });
 
-  // 古い世代のICEを削除
-  for (const key of pendingReceiverICE.keys()) {
-    if (key !== generation) {
-      pendingReceiverICE.delete(key);
+    role = "sender";
+    currentRoom = room;
+    appliedSettings = settings;
+
+    await applyCaptureConstraints(settings);
+
+    const track = localStream.getVideoTracks()[0];
+
+    track.onended = () => {
+      stopLocal(true);
+    };
+
+    updatePreview();
+    updateButtons();
+
+    signal({
+      type: "join",
+      role: "sender",
+      room,
+      name: $("senderName").value,
+      memo: $("roomMemo").value
+    });
+
+    status(`配信開始準備中: ${room}`);
+  } catch (error) {
+    status(`画面共有エラー: ${error.message}`);
+  }
+}
+
+function stopLocal(sendLeave = true) {
+  if (role !== "sender") return;
+
+  for (const receiverId of [...peers.keys()]) {
+    closeSenderPeer(receiverId);
+  }
+
+  if (localStream) {
+    for (const track of localStream.getTracks()) {
+      track.stop();
     }
   }
 
-  pc.onicecandidate = event => {
-    if (
-      event.candidate &&
-      receiverPeer === pc
-    ) {
-      signal({
-        type: "ice",
-        generation,
-        candidate: event.candidate
-      });
-    }
-  };
+  localStream = null;
+  appliedSettings = null;
+
+  $("localVideo").srcObject = null;
+  $("senderStats").textContent = "未配信";
+  $("sendInfo").textContent = "";
+
+  role = null;
+  currentRoom = null;
+
+  if (sendLeave) {
+    signal({ type: "leave" });
+  }
+
+  updateButtons();
+  status("配信を停止しました");
+}
+
+async function applySettings() {
+  if (role !== "sender" || !localStream) return;
+
+  status("配信設定を適用中...");
+
+  const settings = readSettings();
+
+  await applyCaptureConstraints(settings);
+
+  appliedSettings = settings;
+
+  updatePreview();
+
+  for (const receiverId of [...peers.keys()]) {
+    await makeOffer(receiverId);
+  }
+
+  status("設定を適用しました。受信側は自動再接続します");
+}
+
+function stopReceiver(sendLeave = true) {
+  if (role !== "receiver") return;
+
+  if (receiverPeer) {
+    receiverPeer.close();
+    receiverPeer = null;
+  }
+
+  receiverGeneration = null;
+  receiverHistory = null;
+
+  pendingReceiverICE.clear();
+
+  $("remoteVideo").srcObject = null;
+  $("receiverStats").textContent = "未接続";
+
+  role = null;
+  currentRoom = null;
+
+  if (sendLeave) {
+    signal({ type: "leave" });
+  }
+
+  updateButtons();
+  status("受信を停止しました");
+}
+
+function startReceiver(room = $("roomId").value) {
+  if (!room.trim()) {
+    status("ルームIDを入力してください");
+    return;
+  }
+
+  if (role === "sender") {
+    status("配信中は受信に切り替えられません");
+    return;
+  }
+
+  if (role === "receiver") {
+    stopReceiver(true);
+  }
+
+  $("roomId").value = room;
+
+  role = "receiver";
+  currentRoom = room;
+
+  updateButtons();
+
+  signal({
+    type: "join",
+    role: "receiver",
+    room
+  });
+
+  status(`受信待機中: ${room}`);
+}
+
+async function handleOffer(data) {
+  if (role !== "receiver") return;
+
+  if (receiverPeer) {
+    receiverPeer.close();
+  }
+
+  const pc = new RTCPeerConnection(rtcConfig);
+
+  receiverPeer = pc;
+  receiverGeneration = data.generation;
+  receiverHistory = null;
+
+  receiverDisconnectedAt = 0;
 
   pc.ontrack = event => {
     if (receiverPeer !== pc) return;
 
-    if (event.streams?.[0]) {
-      video.srcObject = event.streams[0];
-    } else {
-      let stream = video.srcObject;
+    const stream = event.streams[0] ||
+      new MediaStream([event.track]);
 
-      if (!(stream instanceof MediaStream)) {
-        stream = new MediaStream();
-        video.srcObject = stream;
-      }
+    $("remoteVideo").srcObject = stream;
 
-      if (!stream.getTracks().includes(event.track)) {
-        stream.addTrack(event.track);
-      }
-    }
+    $("remoteVideo").play().catch(() => {});
+  };
 
-    video.play().catch(console.warn);
+  pc.onicecandidate = event => {
+    if (!event.candidate) return;
+    if (receiverPeer !== pc) return;
+
+    signal({
+      type: "ice",
+      generation: data.generation,
+      candidate: event.candidate
+    });
   };
 
   pc.onconnectionstatechange = () => {
     if (receiverPeer !== pc) return;
 
     if (pc.connectionState === "connected") {
-      receiverDisconnectedSince = 0;
-      receiverConnectedAt = Date.now();
-
-      status("接続成功！ 映像受信中");
-    }
-
-    if (pc.connectionState === "failed") {
-      status("接続異常を検出しました");
+      receiverDisconnectedAt = 0;
+      status(`受信接続完了: ${currentRoom}`);
     }
   };
 
-  await pc.setRemoteDescription(msg.sdp);
-
-  if (receiverPeer !== pc) return;
-
-  const candidates =
-    pendingReceiverICE.get(generation) || [];
-
-  pendingReceiverICE.delete(generation);
-
-  for (const candidate of candidates) {
-    try {
-      await pc.addIceCandidate(candidate);
-    } catch (err) {
-      console.warn("ICE:", err);
-    }
-  }
+  await pc.setRemoteDescription(data.sdp);
 
   const answer = await pc.createAnswer();
 
@@ -999,514 +911,226 @@ async function handleOffer(msg) {
 
   signal({
     type: "answer",
-    generation,
+    generation: data.generation,
     sdp: pc.localDescription
   });
+
+  await flushReceiverICE(data.generation);
 }
 
-// ==================================================
-// ICE
-// ==================================================
+async function flushReceiverICE(generation) {
+  const list = pendingReceiverICE.get(generation) || [];
 
-async function handleICE(msg) {
-  if (!msg.candidate) return;
+  pendingReceiverICE.delete(generation);
 
-  if (mode === "sender") {
-    const id = msg.receiverId;
-    const entry = peers.get(id);
-
-    if (!entry) return;
-
-    if (msg.generation !== entry.generation) {
-      return;
-    }
-
-    const pc = entry.pc;
-
-    if (pc.remoteDescription) {
-      try {
-        await pc.addIceCandidate(msg.candidate);
-      } catch (err) {
-        console.warn("ICE:", err);
-      }
-    } else {
-      pendingSenderICE.get(id)?.push(msg.candidate);
-    }
-
-  } else if (mode === "receiver") {
-    const generation = msg.generation;
-
-    if (
-      receiverPeer &&
-      generation === receiverGeneration
-    ) {
-      if (receiverPeer.remoteDescription) {
-        try {
-          await receiverPeer.addIceCandidate(
-            msg.candidate
-          );
-        } catch (err) {
-          console.warn("ICE:", err);
-        }
-      } else {
-        if (!pendingReceiverICE.has(generation)) {
-          pendingReceiverICE.set(generation, []);
-        }
-
-        pendingReceiverICE.get(generation).push(
-          msg.candidate
-        );
-      }
-    } else if (receiverGeneration === null) {
-      if (!pendingReceiverICE.has(generation)) {
-        pendingReceiverICE.set(generation, []);
-      }
-
-      pendingReceiverICE.get(generation).push(
-        msg.candidate
-      );
-    }
-  }
-}
-
-async function handleAnswer(msg) {
-  const entry = peers.get(msg.receiverId);
-
-  if (!entry) return;
-
-  if (msg.generation !== entry.generation) {
-    return;
-  }
-
-  const pc = entry.pc;
-
-  if (pc.signalingState !== "have-local-offer") {
-    return;
-  }
-
-  await pc.setRemoteDescription(msg.sdp);
-
-  const candidates =
-    pendingSenderICE.get(msg.receiverId) || [];
-
-  pendingSenderICE.set(msg.receiverId, []);
-
-  for (const candidate of candidates) {
+  for (const candidate of list) {
     try {
-      await pc.addIceCandidate(candidate);
-    } catch (err) {
-      console.warn("ICE:", err);
+      await receiverPeer?.addIceCandidate(candidate);
+    } catch (error) {
+      console.warn(error);
     }
   }
 }
 
-// ==================================================
-// SIGNAL
-// ==================================================
+async function handleSignal(data) {
+  switch (data.type) {
+    case "room-list":
+      activeRoomList = data.rooms || [];
+      suggestedRoom = data.suggestedRoom || "I";
 
-async function handleSignal(msg) {
-  switch (msg.type) {
-    case "joined":
-      status(
-        mode === "sender"
-          ? "送信準備完了。受信者待機中"
-          : "受信準備完了。送信者待機中"
-      );
+      renderRooms();
+
+      if (!role && !$("roomId").dataset.edited) {
+        $("roomId").value = suggestedRoom;
+      }
       break;
 
-    case "sender-ready":
-      if (mode === "receiver") {
-        status("送信者を検出しました");
-      }
+    case "joined":
+      status(`${data.role === "sender" ? "配信" : "受信"}ルーム参加: ${data.room}`);
       break;
 
     case "receiver-joined":
-      if (mode === "sender") {
-        await createSenderPeer(msg.receiverId);
+      if (role === "sender") {
+        await makeOffer(data.receiverId);
       }
       break;
 
     case "receiver-left":
-      if (mode === "sender") {
-        closeSenderPeer(msg.receiverId);
-      }
+      closeSenderPeer(data.receiverId);
+      break;
+
+    case "sender-ready":
+      status("配信者に接続中...");
       break;
 
     case "sender-left":
-      if (mode === "receiver") {
-        closeReceiverPeer();
-        status("送信者が退出しました");
+      if (role === "receiver") {
+        if (receiverPeer) {
+          receiverPeer.close();
+          receiverPeer = null;
+        }
+
+        $("remoteVideo").srcObject = null;
+        status("配信が終了しました");
       }
       break;
 
     case "offer":
-      if (mode === "receiver") {
-        await handleOffer(msg);
-      }
+      await handleOffer(data);
       break;
 
-    case "answer":
-      if (mode === "sender") {
-        await handleAnswer(msg);
+    case "answer": {
+      const entry = peers.get(data.receiverId);
+
+      if (
+        entry &&
+        entry.generation === data.generation
+      ) {
+        await entry.pc.setRemoteDescription(data.sdp);
       }
       break;
+    }
 
     case "ice":
-      await handleICE(msg);
-      break;
-
-    case "restart-request":
-      if (mode === "sender") {
-        const entry = peers.get(msg.receiverId);
+      if (role === "sender") {
+        const entry = peers.get(data.receiverId);
 
         if (
           entry &&
-          msg.generation === entry.generation
+          entry.generation === data.generation
         ) {
-          const now = Date.now();
+          if (entry.pc.remoteDescription) {
+            await entry.pc.addIceCandidate(data.candidate);
+          } else {
+            const key = data.receiverId;
 
-          if (
-            now - entry.lastRestart >=
-            RESTART_COOLDOWN
-          ) {
-            await createSenderPeer(msg.receiverId);
+            if (!pendingSenderICE.has(key)) {
+              pendingSenderICE.set(key, []);
+            }
+
+            pendingSenderICE.get(key).push(data);
           }
+        }
+      } else if (role === "receiver") {
+        if (data.generation === receiverGeneration) {
+          if (receiverPeer?.remoteDescription) {
+            await receiverPeer.addIceCandidate(data.candidate);
+          } else {
+            if (!pendingReceiverICE.has(data.generation)) {
+              pendingReceiverICE.set(data.generation, []);
+            }
+
+            pendingReceiverICE.get(data.generation).push(data.candidate);
+          }
+        } else if (
+          receiverGeneration === null ||
+          data.generation > receiverGeneration
+        ) {
+          if (!pendingReceiverICE.has(data.generation)) {
+            pendingReceiverICE.set(data.generation, []);
+          }
+
+          pendingReceiverICE.get(data.generation).push(data.candidate);
+        }
+      }
+      break;
+
+    case "restart-request":
+      if (role === "sender") {
+        const entry = peers.get(data.receiverId);
+
+        if (
+          entry &&
+          entry.generation === data.generation
+        ) {
+          await makeOffer(data.receiverId);
         }
       }
       break;
 
     case "error":
-      stop(false);
-      status("サーバーエラー: " + msg.message);
+      status(`エラー: ${data.message}`);
       break;
   }
 }
 
-// ==================================================
-// APPLY SETTINGS
-// ==================================================
+function renderRooms() {
+  const container = $("roomList");
 
-async function applySettings() {
-  if (applying) return;
+  container.replaceChildren();
 
-  applying = true;
-  $("applySettings").disabled = true;
+  $("roomCount").textContent =
+    `現在 ${activeRoomList.length} 件の配信があります`;
 
-  const token = sessionId;
+  if (!activeRoomList.length) {
+    const p = document.createElement("p");
+    p.className = "small";
+    p.textContent = "現在配信中のルームはありません。";
 
-  try {
-    const settings = getSettings();
+    container.appendChild(p);
+    return;
+  }
 
-    updateSettingsInfo();
+  for (const room of activeRoomList) {
+    const card = document.createElement("div");
+    card.className = "room-card";
 
-    if (!running || mode !== "sender") {
-      appliedSettings = settings;
-      status("設定を保存しました");
-      return;
+    const title = document.createElement("div");
+    title.className = "room-title";
+    title.textContent = `🟢 ${room.id}`;
+
+    const name = document.createElement("div");
+    name.className = "room-name";
+    name.textContent = `配信者：${room.name}`;
+
+    card.append(title, name);
+
+    if (room.memo) {
+      const memo = document.createElement("div");
+      memo.className = "room-memo";
+      memo.textContent = room.memo;
+      card.appendChild(memo);
     }
 
-    status("キャプチャ設定を変更中...");
+    const button = document.createElement("button");
+    button.className = "room-watch";
+    button.textContent = "📺 視聴";
 
-    await updateCapture(settings);
+    button.onclick = () => {
+      startReceiver(room.id);
 
-    if (
-      !running ||
-      mode !== "sender" ||
-      token !== sessionId
-    ) {
-      return;
-    }
+      $("remoteVideo").scrollIntoView({
+        behavior: "smooth",
+        block: "center"
+      });
+    };
 
-    appliedSettings = settings;
-
-    status("WebRTC接続を再生成中...");
-
-    const ids = [...peers.keys()];
-
-    for (const id of ids) {
-      if (
-        !running ||
-        mode !== "sender" ||
-        token !== sessionId
-      ) {
-        break;
-      }
-
-      try {
-        await createSenderPeer(id);
-      } catch (err) {
-        console.error("Reconnect:", err);
-      }
-    }
-
-    if (running && token === sessionId) {
-      status("設定を適用しました");
-    }
-
-  } catch (err) {
-    console.error(err);
-    status("設定変更エラー: " + err.message);
-
-  } finally {
-    applying = false;
-    $("applySettings").disabled = false;
+    card.appendChild(button);
+    container.appendChild(card);
   }
 }
 
-$("applySettings").addEventListener(
-  "click",
-  applySettings
-);
+function updateRoomMetadata() {
+  if (role !== "sender") return;
 
-// ==================================================
-// START SENDER
-// ==================================================
-
-$("sendButton").addEventListener(
-  "click",
-  async () => {
-    if (running) return;
-
-    let stream = null;
-
-    try {
-      const roomId = room();
-
-      running = true;
-      mode = "sender";
-
-      const token = ++sessionId;
-
-      $("sendButton").disabled = true;
-      $("receiveButton").disabled = true;
-      $("room").disabled = true;
-
-      appliedSettings = getSettings();
-
-      status("共有画面を選択してください...");
-
-      const constraints = {
-        frameRate: {
-          ideal: captureFPS(appliedSettings)
-        }
-      };
-
-      const height = maxHeight(appliedSettings);
-
-      if (Number.isFinite(height)) {
-        constraints.width = {
-          ideal: Math.round(height * 16 / 9)
-        };
-
-        constraints.height = {
-          ideal: height
-        };
-      }
-
-      stream =
-        await navigator.mediaDevices.getDisplayMedia({
-          video: constraints,
-          audio: appliedSettings.audio
-        });
-
-      if (token !== sessionId) {
-        stream.getTracks().forEach(t => t.stop());
-        return;
-      }
-
-      localStream = stream;
-
-      const track = stream.getVideoTracks()[0];
-
-      if (track) {
-        track.contentHint = appliedSettings.hint;
-
-        track.addEventListener(
-          "ended",
-          () => stop(),
-          { once: true }
-        );
-      }
-
-      updatePreview();
-      updateSenderInfo();
-
-      await connectSocket();
-
-      if (token !== sessionId) return;
-
-      signal({
-        type: "join",
-        roomId,
-        role: "sender"
-      });
-
-    } catch (err) {
-      console.error(err);
-
-      if (stream && stream !== localStream) {
-        stream.getTracks().forEach(t => t.stop());
-      }
-
-      stop(false);
-      status("送信エラー: " + err.message);
-    }
-  }
-);
-
-// ==================================================
-// START RECEIVER
-// ==================================================
-
-$("receiveButton").addEventListener(
-  "click",
-  async () => {
-    if (running) return;
-
-    try {
-      const roomId = room();
-
-      running = true;
-      mode = "receiver";
-
-      const token = ++sessionId;
-
-      $("sendButton").disabled = true;
-      $("receiveButton").disabled = true;
-      $("room").disabled = true;
-
-      video.muted = true;
-
-      status("受信準備中...");
-
-      await connectSocket();
-
-      if (token !== sessionId) return;
-
-      signal({
-        type: "join",
-        roomId,
-        role: "receiver"
-      });
-
-    } catch (err) {
-      stop(false);
-      status("受信エラー: " + err.message);
-    }
-  }
-);
-
-// ==================================================
-// STOP
-// ==================================================
-
-function stop(showStatus = true) {
-  ++sessionId;
-
-  running = false;
-
-  for (const id of [...peers.keys()]) {
-    closeSenderPeer(id);
-  }
-
-  closeReceiverPeer();
-
-  if (socket) {
-    if (socket.readyState === WebSocket.OPEN) {
-      signal({ type: "leave" });
-    }
-
-    socket.close();
-    socket = null;
-  }
-
-  if (localStream) {
-    localStream.getTracks().forEach(t => t.stop());
-    localStream = null;
-  }
-
-  mode = null;
-  appliedSettings = null;
-
-  senderHistory.clear();
-  pendingSenderICE.clear();
-  pendingReceiverICE.clear();
-
-  updatePreview();
-  updateSenderInfo();
-
-  $("sendButton").disabled = false;
-  $("receiveButton").disabled = false;
-  $("applySettings").disabled = false;
-  $("room").disabled = false;
-
-  video.muted = true;
-
-  $("muteButton").textContent = "🔇 ミュート中";
-
-  $("senderStats").textContent = "接続端末なし";
-  $("receiverStats").textContent = "未接続";
-  $("healthInfo").textContent = "監視待機中";
-
-  if (showStatus) status("停止しました");
+  signal({
+    type: "update-room",
+    name: $("senderName").value,
+    memo: $("roomMemo").value
+  });
 }
 
-$("stopButton").addEventListener(
-  "click",
-  () => stop()
-);
+function codecName(report, reports) {
+  const codec = reports.get(report.codecId);
+  return codec?.mimeType || "?";
+}
 
-// ==================================================
-// FULLSCREEN / AUDIO
-// ==================================================
-
-$("fullscreen").addEventListener(
-  "click",
-  async () => {
-    try {
-      if (!video.srcObject) {
-        throw new Error("受信映像がありません");
-      }
-
-      if (!document.fullscreenElement) {
-        await video.requestFullscreen();
-      } else {
-        await document.exitFullscreen();
-      }
-
-    } catch (err) {
-      status("全画面エラー: " + err.message);
-    }
-  }
-);
-
-$("muteButton").addEventListener(
-  "click",
-  () => {
-    video.muted = !video.muted;
-
-    $("muteButton").textContent =
-      video.muted
-        ? "🔇 ミュート中"
-        : "🔊 音声ON";
-
-    if (!video.muted) {
-      video.play().catch(console.warn);
-    }
-  }
-);
-
-// ==================================================
-// STATS HELPERS
-// ==================================================
-
-function videoReport(stats, type) {
-  for (const report of stats.values()) {
+function getSelectedPair(reports) {
+  for (const report of reports.values()) {
     if (
-      report.type === type &&
-      (report.kind === "video" ||
-       report.mediaType === "video") &&
-      !report.isRemote
+      report.type === "candidate-pair" &&
+      report.nominated &&
+      report.state === "succeeded"
     ) {
       return report;
     }
@@ -1515,472 +1139,271 @@ function videoReport(stats, type) {
   return null;
 }
 
-function codecName(stats, report) {
-  return stats.get(report.codecId)?.mimeType || "不明";
+function fpsDelta(report, history, key) {
+  const now = report.timestamp;
+  const count = report[key];
+
+  if (typeof count !== "number") {
+    return "?";
+  }
+
+  const previous = history?.[key];
+
+  history[key] = {
+    count,
+    timestamp: now
+  };
+
+  if (!previous) return "?";
+
+  const seconds = (now - previous.timestamp) / 1000;
+
+  if (seconds <= 0) return "?";
+
+  return ((count - previous.count) / seconds).toFixed(1);
 }
 
-function connectionInfo(stats) {
-  let pair = null;
+async function updateSenderStats() {
+  if (role !== "sender" || !localStream) return;
 
-  for (const report of stats.values()) {
-    if (
-      report.type === "transport" &&
-      report.selectedCandidatePairId
-    ) {
-      pair = stats.get(report.selectedCandidatePairId);
-      if (pair) break;
+  const track = localStream.getVideoTracks()[0];
+  const settings = track.getSettings();
+
+  let text =
+`【キャプチャ】
+解像度: ${settings.width}×${settings.height}
+設定FPS: ${settings.frameRate || "?"}
+contentHint: ${track.contentHint}
+トラック状態: ${track.readyState}
+`;
+
+  for (const [id, entry] of peers) {
+    try {
+      const reports = await entry.pc.getStats();
+
+      let outbound = null;
+
+      for (const report of reports.values()) {
+        if (
+          report.type === "outbound-rtp" &&
+          report.kind === "video"
+        ) {
+          outbound = report;
+          break;
+        }
+      }
+
+      if (!outbound) continue;
+
+      let history = senderHistory.get(id);
+
+      if (!history) {
+        history = {};
+        senderHistory.set(id, history);
+      }
+
+      const encodedFPS = fpsDelta(
+        outbound,
+        history,
+        "framesEncoded"
+      );
+
+      const pair = getSelectedPair(reports);
+
+      let localType = "?";
+      let protocol = "?";
+
+      if (pair) {
+        const candidate = reports.get(pair.localCandidateId);
+
+        localType = candidate?.candidateType || "?";
+        protocol = candidate?.protocol || "?";
+      }
+
+      text +=
+`
+【送信先 ${id.slice(0, 8)}】
+状態: ${entry.pc.connectionState}
+解像度: ${outbound.frameWidth || "?"}×${outbound.frameHeight || "?"}
+Codec: ${codecName(outbound, reports)}
+WebRTC FPS: ${outbound.framesPerSecond ?? "?"}
+実測エンコードFPS: ${encodedFPS}
+通信速度: ${((outbound.bytesSent || 0) / 125000).toFixed(2)} MB累計
+品質制限: ${outbound.qualityLimitationReason || "?"}
+通信: ${localType} / ${protocol}
+`;
+    } catch (error) {
+      console.warn(error);
     }
   }
 
-  if (!pair) {
-    for (const report of stats.values()) {
+  $("senderStats").textContent = text;
+}
+
+async function updateReceiverStats() {
+  if (role !== "receiver" || !receiverPeer) return;
+
+  try {
+    const reports = await receiverPeer.getStats();
+
+    let inbound = null;
+
+    for (const report of reports.values()) {
       if (
-        report.type === "candidate-pair" &&
-        report.state === "succeeded" &&
-        report.nominated
+        report.type === "inbound-rtp" &&
+        report.kind === "video"
       ) {
-        pair = report;
+        inbound = report;
         break;
       }
     }
-  }
 
-  if (!pair) return "";
+    if (!inbound) return;
 
-  const local = stats.get(pair.localCandidateId);
+    if (!receiverHistory) receiverHistory = {};
 
-  const lines = [];
-
-  if (typeof pair.currentRoundTripTime === "number") {
-    lines.push(
-      "RTT: " +
-      fmt(pair.currentRoundTripTime * 1000) +
-      " ms"
+    const receivedFPS = fpsDelta(
+      inbound,
+      receiverHistory,
+      "framesReceived"
     );
-  }
 
-  if (typeof pair.availableOutgoingBitrate === "number") {
-    lines.push(
-      "推定送信帯域: " +
-      fmt(pair.availableOutgoingBitrate / 1e6, 2) +
-      " Mbps"
+    const decodedFPS = fpsDelta(
+      inbound,
+      receiverHistory,
+      "framesDecoded"
     );
-  }
 
-  if (local) {
-    lines.push(
-      "通信: " +
-      (local.candidateType || "?") +
-      " / " +
-      (local.protocol || "?")
-    );
-  }
+    const pair = getSelectedPair(reports);
 
-  return lines.join("\n");
-}
+    let localType = "?";
+    let protocol = "?";
 
-// ==================================================
-// SENDER STATS
-// ==================================================
+    if (pair) {
+      const candidate = reports.get(pair.localCandidateId);
 
-async function updateSenderStats() {
-  if (mode !== "sender") return;
-
-  const lines = [];
-
-  const track = localStream?.getVideoTracks()[0];
-
-  if (track) {
-    const settings = track.getSettings();
-
-    lines.push(
-      "【キャプチャ】" +
-      "\n解像度: " +
-      (settings.width || "?") + "×" +
-      (settings.height || "?") +
-      "\n設定FPS: " +
-      (settings.frameRate ?? "?") +
-      "\ncontentHint: " +
-      track.contentHint +
-      "\nトラック状態: " +
-      track.readyState
-    );
-  }
-
-  for (const [id, entry] of peers) {
-    const pc = entry.pc;
-
-    if (pc.signalingState === "closed") continue;
-
-    try {
-      const stats = await pc.getStats();
-
-      if (peers.get(id) !== entry) continue;
-
-      const report =
-        videoReport(stats, "outbound-rtp");
-
-      if (!report) continue;
-
-      const old = senderHistory.get(id);
-
-      const same =
-        old &&
-        old.generation === entry.generation &&
-        old.id === report.id;
-
-      const seconds = same
-        ? (report.timestamp - old.timestamp) / 1000
-        : 0;
-
-      const mbps = same
-        ? rate(report.bytesSent, old.bytes, seconds)
-        : null;
-
-      const fps = same
-        ? rate(
-            report.framesEncoded,
-            old.framesEncoded,
-            seconds
-          )
-        : null;
-
-      senderHistory.set(id, {
-        generation: entry.generation,
-        id: report.id,
-        timestamp: report.timestamp,
-        bytes: report.bytesSent,
-        framesEncoded: report.framesEncoded
-      });
-
-      lines.push(
-        "\n【送信先 " + id.slice(0, 8) + "】" +
-        "\n状態: " + pc.connectionState +
-        "\n解像度: " +
-        (report.frameWidth || "?") + "×" +
-        (report.frameHeight || "?") +
-        "\nCodec: " + codecName(stats, report) +
-        "\nWebRTC FPS: " +
-        (report.framesPerSecond ?? "?") +
-        "\n実測エンコードFPS: " +
-        fmt(fps) +
-        "\n通信速度: " +
-        fmt(
-          mbps === null ? null : mbps * 8 / 1e6,
-          2
-        ) +
-        " Mbps" +
-        "\n品質制限: " +
-        (report.qualityLimitationReason || "不明") +
-        "\n" +
-        connectionInfo(stats)
-      );
-
-    } catch (err) {
-      console.warn("Sender stats:", err);
+      localType = candidate?.candidateType || "?";
+      protocol = candidate?.protocol || "?";
     }
-  }
-
-  $("senderStats").textContent =
-    lines.join("\n") || "接続端末なし";
-}
-
-// ==================================================
-// RECEIVER STATS
-// ==================================================
-
-let lastReceivedFrames = null;
-let lastFrameChange = 0;
-
-async function updateReceiverStats() {
-  if (
-    mode !== "receiver" ||
-    !receiverPeer ||
-    receiverPeer.signalingState === "closed"
-  ) {
-    return;
-  }
-
-  const pc = receiverPeer;
-
-  try {
-    const stats = await pc.getStats();
-
-    if (pc !== receiverPeer) return;
-
-    const report =
-      videoReport(stats, "inbound-rtp");
-
-    if (!report) return;
-
-    const old = receiverHistory;
-
-    const same =
-      old &&
-      old.generation === receiverGeneration &&
-      old.id === report.id;
-
-    const seconds = same
-      ? (report.timestamp - old.timestamp) / 1000
-      : 0;
-
-    const mbps = same
-      ? rate(
-          report.bytesReceived,
-          old.bytes,
-          seconds
-        )
-        : null;
-
-    const receivedFPS = same
-      ? rate(
-          report.framesReceived,
-          old.framesReceived,
-          seconds
-        )
-      : null;
-
-    const decodedFPS = same
-      ? rate(
-          report.framesDecoded,
-          old.framesDecoded,
-          seconds
-        )
-      : null;
-
-    receiverHistory = {
-      generation: receiverGeneration,
-      id: report.id,
-      timestamp: report.timestamp,
-      bytes: report.bytesReceived,
-      framesReceived: report.framesReceived,
-      framesDecoded: report.framesDecoded
-    };
-
-    if (lastReceivedFrames !== report.framesReceived) {
-      lastReceivedFrames = report.framesReceived;
-      lastFrameChange = Date.now();
-    }
-
-    const stalledSeconds =
-      lastFrameChange
-        ? (Date.now() - lastFrameChange) / 1000
-        : 0;
 
     $("receiverStats").textContent =
-      "【実測受信】" +
-      "\n状態: " + pc.connectionState +
-      "\n解像度: " +
-      (report.frameWidth || video.videoWidth || "?") +
-      "×" +
-      (report.frameHeight || video.videoHeight || "?") +
-      "\nCodec: " + codecName(stats, report) +
-      "\nWebRTC FPS: " +
-      (report.framesPerSecond ?? "?") +
-      "\n実測受信FPS: " +
-      fmt(receivedFPS) +
-      "\n実測デコードFPS: " +
-      fmt(decodedFPS) +
-      "\n通信速度: " +
-      fmt(
-        mbps === null ? null : mbps * 8 / 1e6,
-        2
-      ) +
-      " Mbps" +
-      "\n破棄フレーム: " +
-      (report.framesDropped ?? "?") +
-      "\nパケットロス: " +
-      (report.packetsLost ?? "?") +
-      "\nフレーム更新停止: " +
-      fmt(stalledSeconds) +
-      " 秒" +
-      "\n" +
-      connectionInfo(stats);
-
-  } catch (err) {
-    console.warn("Receiver stats:", err);
+`【実測受信】
+状態: ${receiverPeer.connectionState}
+解像度: ${inbound.frameWidth || "?"}×${inbound.frameHeight || "?"}
+Codec: ${codecName(inbound, reports)}
+WebRTC FPS: ${inbound.framesPerSecond ?? "?"}
+実測受信FPS: ${receivedFPS}
+実測デコードFPS: ${decodedFPS}
+破棄フレーム: ${inbound.framesDropped ?? "?"}
+パケットロス: ${inbound.packetsLost ?? "?"}
+通信: ${localType} / ${protocol}
+`;
+  } catch (error) {
+    console.warn(error);
   }
 }
 
-// ==================================================
-// CONNECTION WATCHDOG
-// ==================================================
-
-async function watchdog() {
-  if (!running || applying) return;
-
+function watchdog() {
   const now = Date.now();
 
-  if (mode === "sender") {
+  if (role === "sender") {
     for (const [id, entry] of peers) {
       const state = entry.pc.connectionState;
 
       if (state === "connected") {
-        entry.disconnectedSince = 0;
+        entry.disconnectedAt = 0;
         continue;
       }
 
-      if (
-        state !== "failed" &&
-        state !== "disconnected"
-      ) {
-        entry.disconnectedSince = 0;
-        continue;
-      }
+      if (state === "failed" || state === "disconnected") {
+        if (!entry.disconnectedAt) {
+          entry.disconnectedAt = now;
+        }
 
-      if (!entry.disconnectedSince) {
-        entry.disconnectedSince = now;
-      }
-
-      if (
-        now - entry.disconnectedSince >=
-          DISCONNECT_TIMEOUT &&
-        now - entry.lastRestart >=
-          RESTART_COOLDOWN
-      ) {
-        entry.lastRestart = now;
-
-        status("接続異常を検出。自動復旧中...");
-
-        try {
-          await createSenderPeer(id);
-        } catch (err) {
-          console.warn("Auto recovery:", err);
+        if (
+          now - entry.disconnectedAt > DISCONNECT_TIMEOUT &&
+          now - entry.lastRestart > RESTART_COOLDOWN
+        ) {
+          makeOffer(id).catch(console.error);
         }
       }
     }
   }
 
-  if (mode === "receiver" && receiverPeer) {
+  if (role === "receiver" && receiverPeer) {
     const state = receiverPeer.connectionState;
 
     if (state === "connected") {
-      receiverDisconnectedSince = 0;
+      receiverDisconnectedAt = 0;
     } else if (
       state === "failed" ||
       state === "disconnected"
     ) {
-      if (!receiverDisconnectedSince) {
-        receiverDisconnectedSince = now;
+      if (!receiverDisconnectedAt) {
+        receiverDisconnectedAt = now;
       }
 
       if (
-        now - receiverDisconnectedSince >=
-          DISCONNECT_TIMEOUT &&
-        now - receiverLastRestart >=
-          RESTART_COOLDOWN
+        now - receiverDisconnectedAt > DISCONNECT_TIMEOUT &&
+        now - lastReceiverRestart > RESTART_COOLDOWN
       ) {
-        receiverLastRestart = now;
-
-        status("接続異常を検出。再接続を要求中...");
+        lastReceiverRestart = now;
 
         signal({
           type: "restart-request",
           generation: receiverGeneration
         });
       }
-    } else {
-      receiverDisconnectedSince = 0;
     }
   }
+
+  $("connectionStats").textContent =
+`WebSocket: ${ws?.readyState === WebSocket.OPEN ? "connected" : "disconnected"}
+動作モード: ${role || "待機"}
+ルーム: ${currentRoom || "-"}
+送信接続数: ${peers.size}
+受信接続状態: ${receiverPeer?.connectionState || "-"}
+`;
 }
 
-// ==================================================
-// MONITOR
-// ==================================================
+$("roomId").addEventListener("input", () => {
+  $("roomId").dataset.edited = "1";
+});
 
-function updateHealthInfo() {
-  if (!running) {
-    $("healthInfo").textContent = "監視待機中";
-    return;
-  }
+$("senderName").addEventListener("input", updateRoomMetadata);
+$("roomMemo").addEventListener("input", updateRoomMetadata);
 
-  const lines = [
-    "監視状態: 稼働中",
-    "自動復旧: 有効",
-    "切断判定: " +
-      (DISCONNECT_TIMEOUT / 1000) +
-      "秒",
-    "再接続間隔: 最低" +
-      (RESTART_COOLDOWN / 1000) +
-      "秒"
-  ];
+$("sendButton").onclick = startSender;
+$("stopButton").onclick = () => stopLocal(true);
 
-  if (mode === "sender") {
-    lines.push(
-      "送信接続数: " + peers.size
-    );
-  }
+$("receiveButton").onclick = () => startReceiver();
 
-  if (mode === "receiver") {
-    lines.push(
-      "WebRTC状態: " +
-      (receiverPeer?.connectionState || "待機中")
-    );
+$("leaveButton").onclick = () => stopReceiver(true);
 
-    if (
-      lastFrameChange &&
-      receiverPeer?.connectionState === "connected"
-    ) {
-      const seconds =
-        (Date.now() - lastFrameChange) / 1000;
+$("applyButton").onclick = applySettings;
 
-      if (seconds > 5) {
-        lines.push(
-          "注意: " +
-          fmt(seconds) +
-          "秒間フレーム更新なし"
-        );
-      }
-    }
-  }
+$("preview").onchange = updatePreview;
 
-  $("healthInfo").textContent = lines.join("\n");
-}
+$("fullscreen").onclick = () => {
+  $("remoteVideo").requestFullscreen?.();
+};
 
-// ==================================================
-// TIMER
-// ==================================================
+$("muteButton").onclick = () => {
+  const video = $("remoteVideo");
 
-setInterval(async () => {
-  if (!running || statsBusy) return;
+  video.muted = !video.muted;
 
-  statsBusy = true;
+  $("muteButton").textContent =
+    video.muted ? "🔇 ミュート中" : "🔊 音声ON";
+};
 
-  try {
-    if (mode === "sender") {
-      await updateSenderStats();
-    }
+connectWS();
+updateButtons();
+updatePreview();
 
-    if (mode === "receiver") {
-      await updateReceiverStats();
-    }
-
-  } catch (err) {
-    console.warn("Stats:", err);
-  } finally {
-    statsBusy = false;
-  }
-}, 1000);
-
-let watchdogBusy = false;
-
-setInterval(async () => {
-  if (watchdogBusy) return;
-
-  watchdogBusy = true;
-
-  try {
-    await watchdog();
-    updateHealthInfo();
-  } catch (err) {
-    console.warn("Watchdog:", err);
-  } finally {
-    watchdogBusy = false;
-  }
-}, 2000);
-
-updateSettingsInfo();
+setInterval(updateSenderStats, 1000);
+setInterval(updateReceiverStats, 1000);
+setInterval(watchdog, 1000);
 
 </script>
 </body>
