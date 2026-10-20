@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WebRTC Caster v21</title>
+<title>WebRTC Caster v21.1</title>
 
 <style>
 * {
@@ -201,7 +201,7 @@ pre {
 <body>
 <main>
 
-<h1>📡 WebRTC Caster v21</h1>
+<h1>📡 WebRTC Caster v21.1</h1>
 <p class="subtitle">Live Room Directory Edition</p>
 
 <div id="status" class="status">接続準備中...</div>
@@ -721,6 +721,9 @@ async function startSender() {
     currentRoom = room;
     appliedSettings = settings;
 
+    // 自分のルームを一覧から即座に除外
+    renderRooms();
+
     await applyCaptureConstraints(settings);
 
     const track = localStream.getVideoTracks()[0];
@@ -768,6 +771,9 @@ function stopLocal(sendLeave = true) {
 
   role = null;
   currentRoom = null;
+
+  // 配信停止後に一覧を再描画
+  renderRooms();
 
   if (sendLeave) {
     signal({ type: "leave" });
@@ -1059,19 +1065,24 @@ function renderRooms() {
 
   container.replaceChildren();
 
-  $("roomCount").textContent =
-    `現在 ${activeRoomList.length} 件の配信があります`;
+  // 自分が配信しているルームを除外
+  const visibleRooms = activeRoomList.filter(room =>
+    !(role === "sender" && room.id === currentRoom)
+  );
 
-  if (!activeRoomList.length) {
+  $("roomCount").textContent =
+    `現在 ${visibleRooms.length} 件の配信があります`;
+
+  if (!visibleRooms.length) {
     const p = document.createElement("p");
     p.className = "small";
-    p.textContent = "現在配信中のルームはありません。";
+    p.textContent = "現在、ほかに配信中のルームはありません。";
 
     container.appendChild(p);
     return;
   }
 
-  for (const room of activeRoomList) {
+  for (const room of visibleRooms) {
     const card = document.createElement("div");
     card.className = "room-card";
 
