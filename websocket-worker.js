@@ -1,24 +1,16 @@
 "use strict";
 
-let running = false;
-
-let reader = null;
 let canvas = null;
 let context = null;
 
 let settings = {
-  fps: 15,
   resolution: "720",
   jpegQuality: 0.8
 };
 
-let lastFrameTime = 0;
 let busy = false;
 
-let processedFrames = 0;
-let skippedFrames = 0;
-
-function targetSize(width, height) {
+function calculateSize(width, height) {
   if (settings.resolution === "native") {
     return {
       width,
@@ -26,7 +18,9 @@ function targetSize(width, height) {
     };
   }
 
-  const targetHeight = Number(settings.resolution);
+  const targetHeight = Number(
+    settings.resolution
+  );
 
   const targetWidth = Math.round(
     targetHeight * 16 / 9
@@ -51,34 +45,32 @@ function targetSize(width, height) {
   };
 }
 
-async function processFrame(frame) {
-  if (!running || busy) {
-    skippedFrames++;
+async function encodeFrame(frame) {
+  if (busy) {
     frame.close();
+
+    self.postMessage({
+      type: "skipped"
+    });
+
     return;
   }
 
-  const now = performance.now();
-
-  const interval = 1000 / settings.fps;
-
-  if (now - lastFrameTime < interval) {
-    skippedFrames++;
-    frame.close();
-    return;
-  }
-
-  lastFrameTime = now;
   busy = true;
 
   try {
     const width =
-      frame.displayWidth || frame.codedWidth;
+      frame.displayWidth ||
+      frame.codedWidth;
 
     const height =
-      frame.displayHeight || frame.codedHeight;
+      frame.displayHeight ||
+      frame.codedHeight;
 
-    const size = targetSize(width, height);
+    const size = calculateSize(
+      width,
+      height
+    );
 
     if (!canvas) {
       canvas = new OffscreenCanvas(
@@ -114,37 +106,30 @@ async function processFrame(frame) {
       quality: settings.jpegQuality
     });
 
-    if (!running) return;
-
     if (blob.size > 1024 * 1024) {
-      skippedFrames++;
+      self.postMessage({
+        type: "skipped"
+      });
+
       return;
     }
 
     const buffer = await blob.arrayBuffer();
 
-    if (!running) return;
-
-    processedFrames++;
-
     self.postMessage({
       type: "frame",
       buffer,
       width: size.width,
-      height: size.height,
-      processedFrames,
-      skippedFrames
+      height: size.height
     }, [buffer]);
 
   } catch (error) {
-    skippedFrames++;
-
     try {
       frame.close();
     } catch {}
 
     self.postMessage({
-      type: "warning",
+      type: "error",
       message: error.message
     });
 
@@ -153,65 +138,20 @@ async function processFrame(frame) {
   }
 }
 
-async function start(track) {
-  running = true;
-
-  try {
-    const processor = new MediaStreamTrackProcessor({
-      track
-    });
-
-    reader = processor.readable.getReader();
-
-    self.postMessage({
-      type: "ready"
-    });
-
-    while (running) {
-      const result = await reader.read();
-
-      if (result.done) break;
-
-      const frame = result.value;
-
-      await processFrame(frame);
-    }
-
-  } catch (error) {
-    if (running) {
-      self.postMessage({
-        type: "error",
-        message: error.message
-      });
-    }
-
-  } finally {
-    running = false;
-
-    try {
-      reader?.releaseLock();
-    } catch {}
-
-    reader = null;
-  }
-}
-
 self.onmessage = event => {
   const data = event.data;
 
-  if (data.type === "start") {
-    settings = data.settings;
-
-    start(data.track);
-  }
-
   if (data.type === "settings") {
     settings = data.settings;
+
+    return;
   }
 
-  if (data.type === "stop") {
-    running = false;
-
-    reader?.cancel().catch(() => {});
+  if (data.type === "frame") {
+    encodeFrame(data.frame);
   }
 };
+
+self.postMessage({
+  type: "ready"
+});
