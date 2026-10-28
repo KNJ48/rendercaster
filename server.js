@@ -26,6 +26,10 @@ app.get("/websocket-worker.js", (req, res) => {
   res.sendFile(path.join(__dirname, "websocket-worker.js"));
 });
 
+/* ========================================
+   WebSocketサーバー
+======================================== */
+
 const wss = new WebSocketServer({
   noServer: true,
   maxPayload: 1024 * 1024
@@ -50,22 +54,34 @@ server.on("upgrade", (request, socket, head) => {
     return;
   }
 
-  const target =
-    pathname === "/signal"
-      ? wss
-      : pathname === "/video"
-        ? videoWSS
-        : null;
+  let target = null;
+
+  if (pathname === "/signal") {
+    target = wss;
+  }
+
+  if (pathname === "/video") {
+    target = videoWSS;
+  }
 
   if (!target) {
     socket.destroy();
     return;
   }
 
-  target.handleUpgrade(request, socket, head, ws => {
-    target.emit("connection", ws, request);
-  });
+  target.handleUpgrade(
+    request,
+    socket,
+    head,
+    ws => {
+      target.emit("connection", ws, request);
+    }
+  );
 });
+
+/* ========================================
+   共通処理
+======================================== */
 
 const rooms = new Map();
 const videoRooms = new Map();
@@ -85,12 +101,18 @@ function validRoom(value) {
 }
 
 function cleanName(value) {
-  if (typeof value !== "string") return "ゲスト";
+  if (typeof value !== "string") {
+    return "ゲスト";
+  }
+
   return value.trim().slice(0, 80) || "ゲスト";
 }
 
 function cleanMemo(value) {
-  if (typeof value !== "string") return "";
+  if (typeof value !== "string") {
+    return "";
+  }
+
   return value.trim().slice(0, 300);
 }
 
@@ -169,14 +191,19 @@ function broadcastRooms() {
 
 function leave(ws) {
   const info = ws.roomInfo;
+
   if (!info) return;
 
   ws.roomInfo = null;
 
   const room = rooms.get(info.room);
+
   if (!room) return;
 
-  if (info.role === "sender" && room.sender === ws) {
+  if (
+    info.role === "sender" &&
+    room.sender === ws
+  ) {
     room.sender = null;
 
     for (const receiver of room.receivers.values()) {
@@ -186,6 +213,7 @@ function leave(ws) {
     }
 
     room.receivers.clear();
+
     rooms.delete(info.room);
 
   } else if (info.role === "receiver") {
@@ -196,7 +224,10 @@ function leave(ws) {
       receiverId: info.id
     });
 
-    if (!room.sender && room.receivers.size === 0) {
+    if (
+      !room.sender &&
+      room.receivers.size === 0
+    ) {
       rooms.delete(info.room);
     }
   }
@@ -233,6 +264,7 @@ wss.on("connection", ws => {
           type: "error",
           message: "ルームIDは1〜100文字で入力してください"
         });
+
         return;
       }
 
@@ -259,7 +291,10 @@ wss.on("connection", ws => {
       }
 
       if (data.role === "sender") {
-        if (room.sender && room.sender !== ws) {
+        if (
+          room.sender &&
+          room.sender !== ws
+        ) {
           send(ws, {
             type: "error",
             message: "このルームでは既に配信中です"
@@ -325,9 +360,11 @@ wss.on("connection", ws => {
     }
 
     const info = ws.roomInfo;
+
     if (!info) return;
 
     const room = rooms.get(info.room);
+
     if (!room) return;
 
     if (data.type === "update-room") {
@@ -379,6 +416,7 @@ wss.on("connection", ws => {
           candidate: data.candidate,
           generation: data.generation
         });
+
       } else {
         send(room.sender, {
           type: "ice",
@@ -408,7 +446,7 @@ wss.on("connection", ws => {
 });
 
 /* ========================================
-   WebSocket映像・音声
+   WebSocket映像・音声専用
 ======================================== */
 
 function videoRoomList() {
@@ -441,25 +479,35 @@ function broadcastVideoRooms() {
 
 function leaveVideo(ws) {
   const info = ws.videoRoomInfo;
+
   if (!info) return;
 
   ws.videoRoomInfo = null;
 
   const room = videoRooms.get(info.room);
+
   if (!room) return;
 
   if (
     info.role === "sender" &&
     room.sender === ws
   ) {
+    /*
+     * 受信者はルームに残して、
+     * 次の配信開始を待てるようにする。
+     */
+    room.sender = null;
+    room.audioInit = null;
+
     for (const receiver of room.receivers) {
       send(receiver, {
         type: "sender-left"
       });
-      receiver.videoRoomInfo = null;
     }
 
-    videoRooms.delete(info.room);
+    if (room.receivers.size === 0) {
+      videoRooms.delete(info.room);
+    }
 
   } else if (info.role === "receiver") {
     room.receivers.delete(ws);
@@ -477,12 +525,21 @@ function leaveVideo(ws) {
 
 videoWSS.on("connection", ws => {
   send(ws, {
+    type: "hello",
+    version: "26.1"
+  });
+
+  send(ws, {
     type: "room-list",
     rooms: videoRoomList(),
     suggestedRoom: nextRoomID(videoRooms)
   });
 
   ws.on("message", (raw, isBinary) => {
+
+    /* ====================================
+       映像・音声中継
+    ==================================== */
 
     if (isBinary) {
       const info = ws.videoRoomInfo;
@@ -510,10 +567,6 @@ videoWSS.on("connection", ws => {
         return;
       }
 
-      /*
-       * 映像は最大1MB
-       * 音声チャンクは最大256KB
-       */
       const limit =
         kind === 1
           ? 1024 * 1024
@@ -523,12 +576,6 @@ videoWSS.on("connection", ws => {
         return;
       }
 
-      /*
-       * 音声は参加途中の受信者に
-       * 初期化データが必要。
-       *
-       * 先頭チャンクを保存する。
-       */
       if (
         kind === 2 &&
         !room.audioInit
@@ -558,11 +605,24 @@ videoWSS.on("connection", ws => {
       return;
     }
 
+    /* ====================================
+       JSONメッセージ
+    ==================================== */
+
     let data;
 
     try {
       data = JSON.parse(raw.toString());
     } catch {
+      return;
+    }
+
+    if (data.type === "ping") {
+      send(ws, {
+        type: "pong",
+        time: Date.now()
+      });
+
       return;
     }
 
@@ -577,8 +637,9 @@ videoWSS.on("connection", ws => {
       if (!validRoom(id)) {
         send(ws, {
           type: "error",
-          message: "ルームIDは1〜100文字で入力してください"
+          message: "ルームIDが不正です"
         });
+
         return;
       }
 
@@ -598,6 +659,7 @@ videoWSS.on("connection", ws => {
           type: "error",
           message: "このルームでは既に配信中です"
         });
+
         return;
       }
 
@@ -659,9 +721,6 @@ videoWSS.on("connection", ws => {
             type: "sender-ready"
           });
 
-          /*
-           * 途中参加者へ音声初期化データ
-           */
           if (room.audioInit) {
             ws.send(room.audioInit, {
               binary: true
@@ -675,9 +734,11 @@ videoWSS.on("connection", ws => {
     }
 
     const info = ws.videoRoomInfo;
+
     if (!info) return;
 
     const room = videoRooms.get(info.room);
+
     if (!room) return;
 
     if (
@@ -696,10 +757,14 @@ videoWSS.on("connection", ws => {
   ws.on("error", () => leaveVideo(ws));
 });
 
+/* ========================================
+   起動
+======================================== */
+
 const PORT = process.env.PORT || 10000;
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(
-    `WebRTC Caster v26 running on port ${PORT}`
+    `WebRTC Caster v26.1 running on port ${PORT}`
   );
 });
