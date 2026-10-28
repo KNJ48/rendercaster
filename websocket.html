@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>WebSocket Caster v25</title>
+
+<style>
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #101114;
+  color: #eee;
+  font-family: system-ui, sans-serif;
+}
+
+main {
+  max-width: 900px;
+  margin: auto;
+  padding: 20px;
+}
+
+h1 {
+  margin-bottom: 4px;
+}
+
+.subtitle {
+  color: #999;
+  margin-top: 0;
+}
+
+section {
+  background: #1b1d22;
+  border: 1px solid #333;
+  border-radius: 12px;
+  padding: 20px;
+  margin: 16px 0;
+}
+
+h2 {
+  margin-top: 0;
+  font-size: 19px;
+}
+
+label {
+  display: block;
+  margin: 12px 0;
+}
+
+input,
+select,
+textarea {
+  display: block;
+  width: 100%;
+  background: #111318;
+  color: white;
+  border: 1px solid #444;
+  border-radius: 7px;
+  padding: 10px;
+  margin-top: 6px;
+  font: inherit;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 65px;
+}
+
+button {
+  border: none;
+  border-radius: 8px;
+  color: white;
+  padding: 11px 16px;
+  margin: 5px 5px 5px 0;
+  cursor: pointer;
+  background: #35598a;
+  font: inherit;
+}
+
+button:hover {
+  filter: brightness(1.15);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+#sendButton {
+  background: #16834b;
+}
+
+#stopButton,
+#leaveButton {
+  background: #b83232;
+}
+
+#fullscreen {
+  background: #7544c7;
+}
+
+#applyButton {
+  background: #a36a18;
+}
+
+video,
+canvas {
+  width: 100%;
+  background: black;
+  border-radius: 8px;
+  max-height: 65vh;
+}
+
+#localVideo {
+  max-height: 300px;
+}
+
+pre {
+  background: #101114;
+  border: 1px solid #303238;
+  padding: 14px;
+  border-radius: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+  font-family: Consolas, monospace;
+  font-size: 13px;
+}
+
+.status {
+  padding: 12px;
+  border-radius: 8px;
+  background: #252a31;
+  margin: 12px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.row > * {
+  flex: 1;
+  min-width: 150px;
+}
+
+.checkbox {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.checkbox input {
+  width: auto;
+  margin: 0;
+}
+
+.room-card {
+  background: #111318;
+  border: 1px solid #383b43;
+  border-radius: 10px;
+  padding: 15px;
+  margin: 12px 0;
+}
+
+.room-title {
+  font-size: 19px;
+  font-weight: bold;
+  overflow-wrap: anywhere;
+}
+
+.room-name {
+  color: #bbb;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+
+.room-memo {
+  color: #aaa;
+  margin-top: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.room-watch {
+  background: #16834b;
+  margin-top: 12px;
+}
+
+.small {
+  color: #999;
+  font-size: 13px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+a {
+  color: #76b7ff;
+}
+</style>
+</head>
+
+<body>
+
+<main>
+
+<h1>📡 WebSocket Caster v25</h1>
+
+<p class="subtitle">
+学校向け互換モード・JPEG映像転送
+</p>
+
+<p class="small">
+  <a href="/">
+    ← 通常のWebRTC版へ戻る
+  </a>
+</p>
+
+<div id="status" class="status">
+接続準備中...
+</div>
+
+<section>
+  <h2>🖥 画面を送信</h2>
+
+  <label>
+    ルームID
+    <input id="roomId" maxlength="100" value="I">
+  </label>
+
+  <label>
+    配信者名
+    <input id="senderName" maxlength="80" value="ゲスト">
+  </label>
+
+  <label>
+    メモ（任意）
+    <textarea id="roomMemo" maxlength="300"></textarea>
+  </label>
+
+  <button id="sendButton">🖥 画面を送信</button>
+  <button id="stopButton" disabled>■ 停止</button>
+
+  <p class="small">
+    WebSocket経由で映像を転送します。
+    音声には対応していません。
+  </p>
+</section>
+
+<section>
+  <h2>👁 送信プレビュー</h2>
+
+  <video
+    id="localVideo"
+    autoplay
+    muted
+    playsinline
+  ></video>
+</section>
+
+<section>
+  <h2>⚙ 配信設定</h2>
+
+  <div class="row">
+    <label>
+      最大画質
+      <select id="resolution">
+        <option value="360">360p</option>
+        <option value="480">480p</option>
+        <option value="720" selected>720p</option>
+        <option value="1080">1080p</option>
+        <option value="native">元画質</option>
+      </select>
+    </label>
+
+    <label>
+      FPS
+      <select id="fps">
+        <option value="5">5</option>
+        <option value="10">10</option>
+        <option value="15" selected>15</option>
+        <option value="20">20</option>
+        <option value="30">30</option>
+      </select>
+    </label>
+  </div>
+
+  <label>
+    JPEG品質
+    <select id="jpegQuality">
+      <option value="0.45">低</option>
+      <option value="0.65">標準</option>
+      <option value="0.8" selected>高画質</option>
+      <option value="0.92">最高画質</option>
+    </select>
+  </label>
+
+  <label class="checkbox">
+    <input type="checkbox" id="preview">
+    送信プレビューを表示
+  </label>
+
+  <button id="applyButton" disabled>
+    🔄 設定を適用
+  </button>
+
+  <div id="captureInfo" class="status">
+    画面共有を開始すると情報を表示します。
+  </div>
+</section>
+
+<section>
+  <h2>📊 送信統計</h2>
+  <pre id="senderStats">未配信</pre>
+</section>
+
+<section>
+  <h2>📺 画面を受信</h2>
+
+  <button id="receiveButton">📺 画面を受信</button>
+  <button id="leaveButton" disabled>■ 受信停止</button>
+  <button id="fullscreen">⛶ 全画面</button>
+
+  <canvas id="remoteCanvas"></canvas>
+</section>
+
+<section>
+  <h2>📊 受信統計</h2>
+  <pre id="receiverStats">未接続</pre>
+</section>
+
+<section>
+  <h2>📡 配信中のルーム一覧</h2>
+  <p id="roomCount" class="small">読み込み中...</p>
+  <div id="roomList"></div>
+</section>
+
+</main>
+
+<script src="/websocket.js"></script>
+
+</body>
+</html>
