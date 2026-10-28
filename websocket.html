@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-<title>WebSocket Caster v25</title>
+<title>WebSocket Caster v26</title>
 
 <style>
 * {
@@ -119,6 +119,11 @@ canvas {
   max-height: 300px;
 }
 
+#remoteCanvas {
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+}
+
 pre {
   background: #101114;
   border: 1px solid #303238;
@@ -199,12 +204,26 @@ pre {
   font-size: 13px;
 }
 
+.warning {
+  color: #ffbd59;
+}
+
 .hidden {
   display: none !important;
 }
 
 a {
   color: #76b7ff;
+}
+
+@media (max-width: 600px) {
+  main {
+    padding: 10px;
+  }
+
+  section {
+    padding: 15px;
+  }
 }
 </style>
 </head>
@@ -213,16 +232,14 @@ a {
 
 <main>
 
-<h1>📡 WebSocket Caster v25</h1>
+<h1>📡 WebSocket Caster v26</h1>
 
 <p class="subtitle">
-学校向け互換モード・JPEG映像転送
+Background + Audio Edition
 </p>
 
 <p class="small">
-  <a href="/">
-    ← 通常のWebRTC版へ戻る
-  </a>
+  <a href="/">← WebRTC版へ戻る</a>
 </p>
 
 <div id="status" class="status">
@@ -234,25 +251,41 @@ a {
 
   <label>
     ルームID
-    <input id="roomId" maxlength="100" value="I">
+    <input
+      id="roomId"
+      maxlength="100"
+      value="I"
+    >
   </label>
 
   <label>
     配信者名
-    <input id="senderName" maxlength="80" value="ゲスト">
+    <input
+      id="senderName"
+      maxlength="80"
+      value="ゲスト"
+    >
   </label>
 
   <label>
     メモ（任意）
-    <textarea id="roomMemo" maxlength="300"></textarea>
+    <textarea
+      id="roomMemo"
+      maxlength="300"
+    ></textarea>
   </label>
 
-  <button id="sendButton">🖥 画面を送信</button>
-  <button id="stopButton" disabled>■ 停止</button>
+  <button id="sendButton">
+    🖥 画面を送信
+  </button>
+
+  <button id="stopButton" disabled>
+    ■ 停止
+  </button>
 
   <p class="small">
-    WebSocket経由で映像を転送します。
-    音声には対応していません。
+    WebSocket経由で映像・音声を配信します。
+    配信者名とメモは配信中でも変更できます。
   </p>
 </section>
 
@@ -271,8 +304,10 @@ a {
   <h2>⚙ 配信設定</h2>
 
   <div class="row">
+
     <label>
       最大画質
+
       <select id="resolution">
         <option value="360">360p</option>
         <option value="480">480p</option>
@@ -284,18 +319,22 @@ a {
 
     <label>
       FPS
+
       <select id="fps">
         <option value="5">5</option>
         <option value="10">10</option>
         <option value="15" selected>15</option>
         <option value="20">20</option>
         <option value="30">30</option>
+        <option value="60">60（実験）</option>
       </select>
     </label>
+
   </div>
 
   <label>
     JPEG品質
+
     <select id="jpegQuality">
       <option value="0.45">低</option>
       <option value="0.65">標準</option>
@@ -305,7 +344,19 @@ a {
   </label>
 
   <label class="checkbox">
-    <input type="checkbox" id="preview">
+    <input
+      type="checkbox"
+      id="audioShare"
+      checked
+    >
+    音声共有
+  </label>
+
+  <label class="checkbox">
+    <input
+      type="checkbox"
+      id="preview"
+    >
     送信プレビューを表示
   </label>
 
@@ -316,31 +367,64 @@ a {
   <div id="captureInfo" class="status">
     画面共有を開始すると情報を表示します。
   </div>
+
+  <p class="small warning">
+    音声共有はブラウザ・OS・共有対象によって
+    利用できない場合があります。
+  </p>
 </section>
 
 <section>
   <h2>📊 送信統計</h2>
+
   <pre id="senderStats">未配信</pre>
 </section>
 
 <section>
   <h2>📺 画面を受信</h2>
 
-  <button id="receiveButton">📺 画面を受信</button>
-  <button id="leaveButton" disabled>■ 受信停止</button>
-  <button id="fullscreen">⛶ 全画面</button>
+  <button id="receiveButton">
+    📺 画面を受信
+  </button>
+
+  <button id="leaveButton" disabled>
+    ■ 受信停止
+  </button>
+
+  <button id="fullscreen">
+    ⛶ 全画面
+  </button>
+
+  <button id="muteButton">
+    🔊 音声ON
+  </button>
 
   <canvas id="remoteCanvas"></canvas>
+
+  <audio
+    id="remoteAudio"
+    autoplay
+    playsinline
+  ></audio>
+
+  <p id="audioStatus" class="small">
+    音声待機中
+  </p>
 </section>
 
 <section>
   <h2>📊 受信統計</h2>
+
   <pre id="receiverStats">未接続</pre>
 </section>
 
 <section>
   <h2>📡 配信中のルーム一覧</h2>
-  <p id="roomCount" class="small">読み込み中...</p>
+
+  <p id="roomCount" class="small">
+    読み込み中...
+  </p>
+
   <div id="roomList"></div>
 </section>
 
