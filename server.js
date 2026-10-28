@@ -14,13 +14,10 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-const MAX_FRAME_SIZE = 1024 * 1024;
-
 const wss = new WebSocketServer({
   server,
   path: "/signal",
-  maxPayload: 2 * 1024 * 1024,
-  perMessageDeflate: false
+  maxPayload: 1024 * 1024
 });
 
 const rooms = new Map();
@@ -98,8 +95,7 @@ function activeRooms() {
       list.push({
         id,
         name: room.name,
-        memo: room.memo,
-        mode: room.mode
+        memo: room.memo
       });
     }
   }
@@ -137,16 +133,13 @@ function leave(ws) {
 
     room.receivers.clear();
     rooms.delete(info.room);
-
   } else if (info.role === "receiver") {
-    if (room.receivers.get(info.id) === ws) {
-      room.receivers.delete(info.id);
+    room.receivers.delete(info.id);
 
-      send(room.sender, {
-        type: "receiver-left",
-        receiverId: info.id
-      });
-    }
+    send(room.sender, {
+      type: "receiver-left",
+      receiverId: info.id
+    });
 
     if (!room.sender && room.receivers.size === 0) {
       rooms.delete(info.room);
@@ -157,57 +150,13 @@ function leave(ws) {
 }
 
 wss.on("connection", ws => {
-
   send(ws, {
     type: "room-list",
     rooms: activeRooms(),
     suggestedRoom: nextRoomID()
   });
 
-  ws.on("message", (raw, isBinary) => {
-
-    /*
-     * WebSocket映像転送
-     *
-     * JPEG画像をバイナリで受信し、
-     * 同じルームの受信者へ転送する。
-     */
-    if (isBinary) {
-      const info = ws.roomInfo;
-
-      if (!info || info.role !== "sender") return;
-
-      const room = rooms.get(info.room);
-
-      if (
-        !room ||
-        room.sender !== ws ||
-        room.mode !== "websocket"
-      ) {
-        return;
-      }
-
-      if (
-        raw.length === 0 ||
-        raw.length > MAX_FRAME_SIZE
-      ) {
-        return;
-      }
-
-      for (const receiver of room.receivers.values()) {
-        if (
-          receiver.readyState === WebSocket.OPEN &&
-          receiver.bufferedAmount < 2 * 1024 * 1024
-        ) {
-          receiver.send(raw, {
-            binary: true
-          });
-        }
-      }
-
-      return;
-    }
-
+  ws.on("message", raw => {
     let data;
 
     try {
@@ -232,26 +181,7 @@ wss.on("connection", ws => {
         return;
       }
 
-      if (
-        data.role !== "sender" &&
-        data.role !== "receiver"
-      ) {
-        return;
-      }
-
-      /*
-       * 重複ルームへの配信は拒否する。
-       * 既存の参加状態は変更しない。
-       */
-      if (
-        data.role === "sender" &&
-        rooms.get(id)?.sender &&
-        rooms.get(id).sender !== ws
-      ) {
-        send(ws, {
-          type: "error",
-          message: "このルームでは既に配信中です"
-        });
+      if (data.role !== "sender" && data.role !== "receiver") {
         return;
       }
 
@@ -264,22 +194,29 @@ wss.on("connection", ws => {
           sender: null,
           receivers: new Map(),
           name: "ゲスト",
-          memo: "",
-          mode: "webrtc"
+          memo: ""
         };
 
         rooms.set(id, room);
       }
 
       if (data.role === "sender") {
+        if (room.sender && room.sender !== ws) {
+          send(ws, {
+            type: "error",
+            message: "このルームでは既に配信中です"
+          });
+
+          if (!room.sender && room.receivers.size === 0) {
+            rooms.delete(id);
+          }
+
+          return;
+        }
+
         room.sender = ws;
         room.name = cleanName(data.name);
         room.memo = cleanMemo(data.memo);
-
-        room.mode =
-          data.mode === "websocket"
-            ? "websocket"
-            : "webrtc";
 
         ws.roomInfo = {
           room: id,
@@ -289,24 +226,15 @@ wss.on("connection", ws => {
         send(ws, {
           type: "joined",
           role: "sender",
-          room: id,
-          mode: room.mode
+          room: id
         });
 
-        for (const [receiverId, receiver] of room.receivers) {
-          send(receiver, {
-            type: "sender-ready",
-            mode: room.mode
+        for (const [receiverId] of room.receivers) {
+          send(ws, {
+            type: "receiver-joined",
+            receiverId
           });
-
-          if (room.mode === "webrtc") {
-            send(ws, {
-              type: "receiver-joined",
-              receiverId
-            });
-          }
         }
-
       } else {
         const receiverId = crypto.randomUUID();
 
@@ -322,21 +250,17 @@ wss.on("connection", ws => {
           type: "joined",
           role: "receiver",
           room: id,
-          receiverId,
-          mode: room.sender ? room.mode : null
+          receiverId
         });
 
         if (room.sender) {
-          if (room.mode === "webrtc") {
-            send(room.sender, {
-              type: "receiver-joined",
-              receiverId
-            });
-          }
+          send(room.sender, {
+            type: "receiver-joined",
+            receiverId
+          });
 
           send(ws, {
-            type: "sender-ready",
-            mode: room.mode
+            type: "sender-ready"
           });
         }
       }
@@ -352,12 +276,7 @@ wss.on("connection", ws => {
     if (!room) return;
 
     if (data.type === "update-room") {
-      if (
-        info.role !== "sender" ||
-        room.sender !== ws
-      ) {
-        return;
-      }
+      if (info.role !== "sender" || room.sender !== ws) return;
 
       room.name = cleanName(data.name);
       room.memo = cleanMemo(data.memo);
@@ -366,51 +285,33 @@ wss.on("connection", ws => {
       return;
     }
 
-    /*
-     * 以下はv22.2のWebRTCシグナリング。
-     */
-    if (room.mode !== "webrtc") return;
-
-    if (
-      data.type === "offer" &&
-      info.role === "sender" &&
-      room.sender === ws
-    ) {
+    if (data.type === "offer" && info.role === "sender") {
       send(room.receivers.get(data.receiverId), {
         type: "offer",
         sdp: data.sdp,
         generation: data.generation
       });
-
       return;
     }
 
-    if (
-      data.type === "answer" &&
-      info.role === "receiver"
-    ) {
+    if (data.type === "answer" && info.role === "receiver") {
       send(room.sender, {
         type: "answer",
         receiverId: info.id,
         sdp: data.sdp,
         generation: data.generation
       });
-
       return;
     }
 
     if (data.type === "ice") {
-      if (
-        info.role === "sender" &&
-        room.sender === ws
-      ) {
+      if (info.role === "sender") {
         send(room.receivers.get(data.receiverId), {
           type: "ice",
           candidate: data.candidate,
           generation: data.generation
         });
-
-      } else if (info.role === "receiver") {
+      } else {
         send(room.sender, {
           type: "ice",
           receiverId: info.id,
@@ -422,10 +323,7 @@ wss.on("connection", ws => {
       return;
     }
 
-    if (
-      data.type === "restart-request" &&
-      info.role === "receiver"
-    ) {
+    if (data.type === "restart-request" && info.role === "receiver") {
       send(room.sender, {
         type: "restart-request",
         receiverId: info.id,
@@ -441,5 +339,5 @@ wss.on("connection", ws => {
 const PORT = process.env.PORT || 10000;
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`WebRTC Caster v24 running on port ${PORT}`);
+  console.log(`WebRTC Caster v21 running on port ${PORT}`);
 });
