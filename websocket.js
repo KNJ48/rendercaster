@@ -5,7 +5,7 @@ const $ = id => document.getElementById(id);
 const FRAME_VIDEO = 1;
 const FRAME_AUDIO = 2;
 
-const MAX_VIDEO_BUFFER = 1024 * 1024;
+const MAX_BUFFER = 1024 * 1024;
 
 let ws = null;
 let reconnectTimer = null;
@@ -21,19 +21,40 @@ let settingsApplying = false;
 
 let activeRooms = [];
 
+/* ========================================
+   映像送信状態
+======================================== */
+
 let worker = null;
+let workerReady = false;
+let workerBusy = false;
 let workerMode = false;
+
+let processor = null;
+let processorReader = null;
+let processorRunning = false;
 
 let captureVideo = null;
 let captureCanvas = null;
 let captureContext = null;
-let captureTimer = null;
 
+let captureTimer = null;
 let captureBusy = false;
+
 let captureToken = 0;
+
+let lastEncodeTime = 0;
+
+/* ========================================
+   音声送信状態
+======================================== */
 
 let audioRecorder = null;
 let audioMime = "";
+
+/* ========================================
+   統計
+======================================== */
 
 let sentFrames = 0;
 let sentVideoBytes = 0;
@@ -47,19 +68,15 @@ let receivedAudioBytes = 0;
 let senderHistory = {};
 let receiverHistory = {};
 
+let lastFrameAt = 0;
+
+/* ========================================
+   映像受信状態
+======================================== */
+
 let pendingBlob = null;
 let decoding = false;
 let receiverToken = 0;
-
-let lastFrameAt = 0;
-
-let mediaSource = null;
-let sourceBuffer = null;
-let audioQueue = [];
-let audioObjectURL = null;
-let audioGeneration = 0;
-let audioStarted = false;
-let pendingAudioBytes = 0;
 
 const remoteCanvas = $("remoteCanvas");
 
@@ -71,7 +88,28 @@ const remoteContext = remoteCanvas.getContext(
 );
 
 /* ========================================
-   共通
+   音声受信状態
+======================================== */
+
+let mediaSource = null;
+let sourceBuffer = null;
+let audioQueue = [];
+
+let audioObjectURL = null;
+let audioGeneration = 0;
+let audioStarted = false;
+
+let pendingAudioBytes = 0;
+
+/* ========================================
+   接続監視
+======================================== */
+
+let lastPong = 0;
+let connectionError = "";
+
+/* ========================================
+   共通処理
 ======================================== */
 
 function status(message) {
@@ -79,12 +117,13 @@ function status(message) {
 }
 
 function signal(data) {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(data));
-    return true;
+  if (ws?.readyState !== WebSocket.OPEN) {
+    return false;
   }
 
-  return false;
+  ws.send(JSON.stringify(data));
+
+  return true;
 }
 
 function updateButtons() {
@@ -114,7 +153,9 @@ function readSettings() {
   return {
     resolution: $("resolution").value,
     fps: Number($("fps").value),
-    jpegQuality: Number($("jpegQuality").value),
+    jpegQuality: Number(
+      $("jpegQuality").value
+    ),
     preview: $("preview").checked,
     audio: $("audioShare").checked
   };
@@ -134,13 +175,13 @@ function targetSize(settings) {
 }
 
 function initialConstraints(settings) {
-  const size = targetSize(settings);
-
   const video = {
     frameRate: {
       ideal: settings.fps
     }
   };
+
+  const size = targetSize(settings);
 
   if (size) {
     video.width = {
@@ -164,7 +205,11 @@ function currentCaptureSize() {
 function outputSize() {
   const actual = currentCaptureSize();
 
-  if (!actual?.width || !actual?.height) {
+  if (
+    !actual?.width ||
+    !actual?.height ||
+    !appliedSettings
+  ) {
     return null;
   }
 
@@ -196,54 +241,6 @@ function outputSize() {
   };
 }
 
-function updateCaptureInfo() {
-  const actual = currentCaptureSize();
-
-  if (!actual || !appliedSettings) {
-    $("captureInfo").textContent =
-      "画面共有を開始すると情報を表示します。";
-
-    return;
-  }
-
-  const size = outputSize();
-
-  $("captureInfo").textContent =
-`========== キャプチャ ==========
-
-解像度: ${actual.width}×${actual.height}
-設定FPS: ${actual.frameRate ?? "?"}
-
-========== JPEG ==========
-
-送信解像度: ${size?.width ?? "?"}×${size?.height ?? "?"}
-目標FPS: ${appliedSettings.fps}
-JPEG品質: ${appliedSettings.jpegQuality}
-
-========== 処理方式 ==========
-
-${workerMode
-  ? "MediaStreamTrackProcessor + Worker"
-  : "Canvas互換モード"}
-
-音声トラック:
-${localStream.getAudioTracks().length
-  ? "取得成功"
-  : "なし"}
-
-※FPSは送信統計で確認できます。`;
-}
-
-function updatePreview() {
-  const enabled = $("preview").checked;
-
-  $("localVideo").style.display =
-    enabled ? "block" : "none";
-
-  $("localVideo").srcObject =
-    enabled ? localStream : null;
-}
-
 /* ========================================
    WebSocket接続
 ======================================== */
@@ -264,9 +261,12 @@ function connect() {
       ? "wss:"
       : "ws:";
 
-  const socket = new WebSocket(
-    `${protocol}//${location.host}/video`
-  );
+  const url =
+    `${protocol}//${location.host}/video`;
+
+  status(`サーバーに接続中...\n${url}`);
+
+  const socket = new WebSocket(url);
 
   socket.binaryType = "arraybuffer";
 
@@ -275,7 +275,9 @@ function connect() {
   socket.onopen = () => {
     if (ws !== socket) return;
 
-    status("WebSocket接続完了");
+    connectionError = "";
+
+    status("✅ WebSocket接続完了");
   };
 
   socket.onmessage = event => {
@@ -297,7 +299,7 @@ function connect() {
     handleMessage(data);
   };
 
-  socket.onclose = () => {
+  socket.onclose = event => {
     if (ws !== socket) return;
 
     ws = null;
@@ -305,17 +307,31 @@ function connect() {
     stopSender(false);
     stopReceiver(false);
 
-    status("サーバー切断。再接続します...");
+    connectionError =
+      `切断コード: ${event.code}\n` +
+      `理由: ${event.reason || "不明"}`;
+
+    status(
+      "❌ WebSocket切断\n" +
+      connectionError +
+      "\n3秒後に再接続します..."
+    );
 
     clearTimeout(reconnectTimer);
 
-    reconnectTimer = setTimeout(connect, 3000);
+    reconnectTimer = setTimeout(
+      connect,
+      3000
+    );
   };
 
   socket.onerror = () => {
     if (ws !== socket) return;
 
-    status("WebSocket通信エラー");
+    status(
+      "⚠ WebSocket通信エラー\n" +
+      "接続先: /video"
+    );
   };
 }
 
@@ -353,13 +369,13 @@ async function applyCaptureSettings(settings) {
 
   if (!track) return;
 
-  const size = targetSize(settings);
-
   const constraints = {
     frameRate: {
       ideal: settings.fps
     }
   };
+
+  const size = targetSize(settings);
 
   if (size) {
     constraints.width = {
@@ -369,19 +385,100 @@ async function applyCaptureSettings(settings) {
     constraints.height = {
       ideal: size.height
     };
+  } else {
+    /*
+     * 元画質に戻す場合、
+     * 利用可能な最大解像度を希望する。
+     */
+    const capabilities =
+      track.getCapabilities?.();
+
+    const width = capabilities?.width?.max;
+    const height = capabilities?.height?.max;
+
+    if (
+      Number.isFinite(width) &&
+      Number.isFinite(height)
+    ) {
+      constraints.width = {
+        ideal: width
+      };
+
+      constraints.height = {
+        ideal: height
+      };
+    }
   }
 
   try {
     await track.applyConstraints(constraints);
   } catch (error) {
-    console.warn("Capture constraints:", error);
+    console.warn(
+      "Capture constraints:",
+      error
+    );
   }
 
   updateCaptureInfo();
 }
 
+function updateCaptureInfo() {
+  const actual = currentCaptureSize();
+
+  if (!actual || !appliedSettings) {
+    $("captureInfo").textContent =
+      "画面共有を開始すると情報を表示します。";
+
+    return;
+  }
+
+  const size = outputSize();
+
+  $("captureInfo").textContent =
+`========== キャプチャ ==========
+
+解像度:
+${actual.width}×${actual.height}
+
+設定FPS:
+${actual.frameRate ?? "?"}
+
+========== JPEG配信 ==========
+
+送信解像度:
+${size?.width ?? "?"}×${size?.height ?? "?"}
+
+目標FPS:
+${appliedSettings.fps}
+
+JPEG品質:
+${appliedSettings.jpegQuality}
+
+処理方式:
+${workerMode ? "VideoFrame + Worker" : "Canvas互換モード"}
+
+音声トラック:
+${localStream.getAudioTracks().length ? "取得成功" : "なし"}
+
+※実際の送信FPSは統計で確認できます。`;
+}
+
 /* ========================================
-   Worker映像送信
+   プレビュー
+======================================== */
+
+function updatePreview() {
+  const enabled = $("preview").checked;
+
+  $("localVideo").style.display =
+    enabled ? "block" : "none";
+
+  $("localVideo").srcObject =
+    enabled ? localStream : null;
+}
+
+/* ========================================
+   Worker映像処理
 ======================================== */
 
 async function startWorkerCapture() {
@@ -393,95 +490,255 @@ async function startWorkerCapture() {
     return false;
   }
 
-  const track = localStream.getVideoTracks()[0];
+  const track = localStream?.getVideoTracks()[0];
 
-  let workerTrack;
+  if (!track) return false;
 
   try {
-    workerTrack = track.clone();
-
     worker = new Worker(
       "/websocket-worker.js"
     );
 
-    worker.onmessage = event => {
-      const data = event.data;
+    workerReady = false;
+    workerBusy = false;
 
-      if (data.type === "ready") {
-        status("Worker映像配信を開始しました");
-      }
-
-      if (data.type === "frame") {
-        if (
-          role !== "sender" ||
-          !workerMode
-        ) {
-          return;
-        }
-
-        if (
-          ws?.readyState !== WebSocket.OPEN ||
-          ws.bufferedAmount > MAX_VIDEO_BUFFER
-        ) {
-          skippedFrames++;
-          return;
-        }
-
-        if (
-          sendBinary(
-            FRAME_VIDEO,
-            data.buffer
-          )
-        ) {
-          sentFrames++;
-          sentVideoBytes += data.buffer.byteLength;
-        }
-
-        skippedFrames = Math.max(
-          skippedFrames,
-          data.skippedFrames || 0
+    const ready = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(
+          new Error("Worker起動タイムアウト")
         );
-      }
+      }, 3000);
 
-      if (data.type === "error") {
-        console.error("Worker:", data.message);
-        status(`Workerエラー: ${data.message}`);
-      }
-    };
+      worker.onmessage = event => {
+        const data = event.data;
 
-    worker.onerror = error => {
-      console.error("Worker:", error);
-    };
+        if (data.type === "ready") {
+          clearTimeout(timeout);
+
+          workerReady = true;
+
+          resolve();
+          return;
+        }
+
+        if (data.type === "frame") {
+          workerBusy = false;
+
+          if (
+            role !== "sender" ||
+            !workerMode
+          ) {
+            return;
+          }
+
+          if (
+            ws?.readyState !== WebSocket.OPEN ||
+            ws.bufferedAmount > MAX_BUFFER
+          ) {
+            skippedFrames++;
+            return;
+          }
+
+          if (
+            sendBinary(
+              FRAME_VIDEO,
+              data.buffer
+            )
+          ) {
+            sentFrames++;
+            sentVideoBytes +=
+              data.buffer.byteLength;
+          }
+
+          return;
+        }
+
+        if (data.type === "skipped") {
+          workerBusy = false;
+          skippedFrames++;
+        }
+
+        if (data.type === "error") {
+          workerBusy = false;
+          skippedFrames++;
+
+          console.warn(
+            "Worker error:",
+            data.message
+          );
+        }
+      };
+
+      worker.onerror = error => {
+        clearTimeout(timeout);
+        reject(error);
+      };
+    });
+
+    await ready;
 
     worker.postMessage({
-      type: "start",
-      track: workerTrack,
+      type: "settings",
       settings: {
-        fps: appliedSettings.fps,
         resolution: appliedSettings.resolution,
         jpegQuality: appliedSettings.jpegQuality
       }
-    }, [workerTrack]);
+    });
 
+    /*
+     * MediaStreamTrack自体はWorkerへ転送しない。
+     *
+     * メインスレッドでフレームを取得し、
+     * VideoFrameだけWorkerへ転送する。
+     */
+    processor = new MediaStreamTrackProcessor({
+      track
+    });
+
+    processorReader =
+      processor.readable.getReader();
+
+    processorRunning = true;
     workerMode = true;
+
+    lastEncodeTime = 0;
+
+    processVideoFrames();
 
     return true;
 
   } catch (error) {
     console.warn(
-      "Worker非対応。Canvasへ切替:",
+      "Worker利用不可:",
       error
     );
 
-    worker?.terminate();
-    worker = null;
-
-    try {
-      workerTrack?.stop();
-    } catch {}
+    await stopWorkerCapture();
 
     return false;
   }
+}
+
+async function processVideoFrames() {
+  const reader = processorReader;
+
+  if (!reader) return;
+
+  try {
+    while (
+      processorRunning &&
+      reader === processorReader
+    ) {
+      const result = await reader.read();
+
+      if (result.done) break;
+
+      const frame = result.value;
+
+      if (
+        !processorRunning ||
+        role !== "sender" ||
+        !workerMode
+      ) {
+        frame.close();
+        continue;
+      }
+
+      const now = performance.now();
+
+      const interval =
+        1000 / appliedSettings.fps;
+
+      if (
+        now - lastEncodeTime < interval ||
+        workerBusy ||
+        ws?.readyState !== WebSocket.OPEN ||
+        ws.bufferedAmount > MAX_BUFFER
+      ) {
+        frame.close();
+        skippedFrames++;
+        continue;
+      }
+
+      lastEncodeTime = now;
+
+      workerBusy = true;
+
+      try {
+        worker.postMessage({
+          type: "frame",
+          frame
+        }, [frame]);
+
+      } catch (error) {
+        workerBusy = false;
+        skippedFrames++;
+
+        frame.close();
+
+        console.warn(
+          "VideoFrame transfer:",
+          error
+        );
+      }
+    }
+
+  } catch (error) {
+    if (processorRunning) {
+      console.warn(
+        "Video processor:",
+        error
+      );
+
+      /*
+       * 実行中にProcessorが失敗した場合は
+       * Canvas互換モードへ切り替える。
+       */
+      await stopWorkerCapture();
+
+      if (
+        role === "sender" &&
+        localStream
+      ) {
+        try {
+          await startCanvasCapture();
+          updateCaptureInfo();
+        } catch (fallbackError) {
+          status(
+            `映像処理エラー: ${fallbackError.message}`
+          );
+        }
+      }
+    }
+  }
+}
+
+async function stopWorkerCapture() {
+  processorRunning = false;
+
+  const reader = processorReader;
+
+  processorReader = null;
+  processor = null;
+
+  if (reader) {
+    try {
+      await reader.cancel();
+    } catch {}
+
+    try {
+      reader.releaseLock();
+    } catch {}
+  }
+
+  if (worker) {
+    worker.terminate();
+    worker = null;
+  }
+
+  workerReady = false;
+  workerBusy = false;
+  workerMode = false;
 }
 
 /* ========================================
@@ -502,6 +759,7 @@ function stopCanvasCapture() {
     captureVideo.pause();
     captureVideo.srcObject = null;
     captureVideo.remove();
+
     captureVideo = null;
   }
 
@@ -520,7 +778,7 @@ async function captureCanvasFrame(token) {
     return;
   }
 
-  if (ws.bufferedAmount > MAX_VIDEO_BUFFER) {
+  if (ws.bufferedAmount > MAX_BUFFER) {
     skippedFrames++;
     return;
   }
@@ -540,8 +798,13 @@ async function captureCanvasFrame(token) {
 
     if (!size) return;
 
-    captureCanvas.width = size.width;
-    captureCanvas.height = size.height;
+    if (
+      captureCanvas.width !== size.width ||
+      captureCanvas.height !== size.height
+    ) {
+      captureCanvas.width = size.width;
+      captureCanvas.height = size.height;
+    }
 
     captureContext.drawImage(
       captureVideo,
@@ -566,31 +829,40 @@ async function captureCanvasFrame(token) {
       return;
     }
 
+    if (blob.size > 1024 * 1024) {
+      skippedFrames++;
+      return;
+    }
+
     const buffer = await blob.arrayBuffer();
 
     if (
       token !== captureToken ||
-      buffer.byteLength > 1024 * 1024
+      role !== "sender"
     ) {
-      skippedFrames++;
       return;
     }
 
     if (
       ws?.readyState === WebSocket.OPEN &&
-      ws.bufferedAmount < MAX_VIDEO_BUFFER
+      ws.bufferedAmount < MAX_BUFFER
     ) {
-      sendBinary(FRAME_VIDEO, buffer);
-
-      sentFrames++;
-      sentVideoBytes += buffer.byteLength;
+      if (
+        sendBinary(
+          FRAME_VIDEO,
+          buffer
+        )
+      ) {
+        sentFrames++;
+        sentVideoBytes += buffer.byteLength;
+      }
 
     } else {
       skippedFrames++;
     }
 
   } catch (error) {
-    console.warn(error);
+    console.warn("Canvas:", error);
     skippedFrames++;
 
   } finally {
@@ -601,7 +873,8 @@ async function captureCanvasFrame(token) {
 async function startCanvasCapture() {
   workerMode = false;
 
-  captureCanvas = document.createElement("canvas");
+  captureCanvas =
+    document.createElement("canvas");
 
   captureContext = captureCanvas.getContext(
     "2d",
@@ -610,7 +883,14 @@ async function startCanvasCapture() {
     }
   );
 
-  captureVideo = document.createElement("video");
+  if (!captureContext) {
+    throw new Error(
+      "Canvasを初期化できませんでした"
+    );
+  }
+
+  captureVideo =
+    document.createElement("video");
 
   captureVideo.autoplay = true;
   captureVideo.muted = true;
@@ -652,6 +932,8 @@ async function startVideoCapture() {
   sentVideoBytes = 0;
   skippedFrames = 0;
 
+  senderHistory = {};
+
   const success = await startWorkerCapture();
 
   if (!success) {
@@ -662,15 +944,27 @@ async function startVideoCapture() {
 }
 
 function stopVideoCapture() {
-  if (worker) {
-    worker.postMessage({
-      type: "stop"
-    });
+  processorRunning = false;
 
+  if (processorReader) {
+    const reader = processorReader;
+    processorReader = null;
+    processor = null;
+
+    reader.cancel().catch(() => {});
+
+    try {
+      reader.releaseLock();
+    } catch {}
+  }
+
+  if (worker) {
     worker.terminate();
     worker = null;
   }
 
+  workerReady = false;
+  workerBusy = false;
   workerMode = false;
 
   stopCanvasCapture();
@@ -681,9 +975,22 @@ function stopVideoCapture() {
 ======================================== */
 
 function startAudioCapture() {
-  const tracks = localStream?.getAudioTracks() || [];
+  const tracks =
+    localStream?.getAudioTracks() || [];
 
   if (!tracks.length) {
+    console.log(
+      "音声トラックがありません"
+    );
+
+    return;
+  }
+
+  if (typeof MediaRecorder === "undefined") {
+    console.warn(
+      "MediaRecorder非対応"
+    );
+
     return;
   }
 
@@ -697,15 +1004,18 @@ function startAudioCapture() {
   ) || "";
 
   if (!audioMime) {
-    console.warn("Opus録音に非対応");
+    console.warn(
+      "WebM/Opus録音に非対応"
+    );
+
     return;
   }
 
   try {
-    const audioStream = new MediaStream(tracks);
+    const stream = new MediaStream(tracks);
 
     audioRecorder = new MediaRecorder(
-      audioStream,
+      stream,
       {
         mimeType: audioMime,
         audioBitsPerSecond: 128000
@@ -732,43 +1042,59 @@ function startAudioCapture() {
         }
 
         if (
-          ws.bufferedAmount > MAX_VIDEO_BUFFER
+          ws.bufferedAmount > MAX_BUFFER
         ) {
           return;
         }
 
         if (
-          sendBinary(FRAME_AUDIO, buffer)
+          sendBinary(
+            FRAME_AUDIO,
+            buffer
+          )
         ) {
           sentAudioBytes += buffer.byteLength;
         }
 
       } catch (error) {
-        console.warn("Audio send:", error);
+        console.warn(
+          "Audio send:",
+          error
+        );
       }
     };
 
-    /*
-     * 約250msごとに音声チャンク生成
-     */
+    audioRecorder.onerror = error => {
+      console.warn(
+        "MediaRecorder:",
+        error
+      );
+    };
+
     audioRecorder.start(250);
 
   } catch (error) {
-    console.warn("Audio capture:", error);
+    console.warn(
+      "Audio capture:",
+      error
+    );
+
     audioRecorder = null;
   }
 }
 
 function stopAudioCapture() {
-  if (audioRecorder) {
-    audioRecorder.ondataavailable = null;
+  if (!audioRecorder) return;
 
-    if (audioRecorder.state !== "inactive") {
-      audioRecorder.stop();
-    }
+  audioRecorder.ondataavailable = null;
 
-    audioRecorder = null;
+  if (
+    audioRecorder.state !== "inactive"
+  ) {
+    audioRecorder.stop();
   }
+
+  audioRecorder = null;
 }
 
 /* ========================================
@@ -801,16 +1127,12 @@ function resetAudioReceiver() {
 }
 
 function initializeAudioReceiver() {
-  if (!window.MediaSource) {
-    $("audioStatus").textContent =
-      "このブラウザは音声再生方式に非対応です";
-
-    return false;
-  }
-
   const mime = "audio/webm;codecs=opus";
 
-  if (!MediaSource.isTypeSupported(mime)) {
+  if (
+    typeof MediaSource === "undefined" ||
+    !MediaSource.isTypeSupported(mime)
+  ) {
     $("audioStatus").textContent =
       "WebM/Opus再生に非対応です";
 
@@ -819,32 +1141,36 @@ function initializeAudioReceiver() {
 
   const generation = ++audioGeneration;
 
-  mediaSource = new MediaSource();
+  const source = new MediaSource();
+
+  mediaSource = source;
 
   audioObjectURL =
-    URL.createObjectURL(mediaSource);
+    URL.createObjectURL(source);
 
   const audio = $("remoteAudio");
 
   audio.src = audioObjectURL;
 
-  mediaSource.addEventListener(
+  source.addEventListener(
     "sourceopen",
     () => {
       if (
         generation !== audioGeneration ||
-        mediaSource.readyState !== "open"
+        source.readyState !== "open"
       ) {
         return;
       }
 
       try {
-        sourceBuffer =
-          mediaSource.addSourceBuffer(mime);
+        const buffer =
+          source.addSourceBuffer(mime);
 
-        sourceBuffer.mode = "sequence";
+        sourceBuffer = buffer;
 
-        sourceBuffer.addEventListener(
+        buffer.mode = "sequence";
+
+        buffer.addEventListener(
           "updateend",
           () => {
             if (
@@ -860,8 +1186,6 @@ function initializeAudioReceiver() {
         flushAudioQueue();
 
       } catch (error) {
-        console.warn("Audio SourceBuffer:", error);
-
         $("audioStatus").textContent =
           `音声初期化エラー: ${error.message}`;
       }
@@ -878,14 +1202,8 @@ function flushAudioQueue() {
   if (
     !sourceBuffer ||
     sourceBuffer.updating ||
-    !audioQueue.length
-  ) {
-    return;
-  }
-
-  if (
-    !mediaSource ||
-    mediaSource.readyState !== "open"
+    !audioQueue.length ||
+    mediaSource?.readyState !== "open"
   ) {
     return;
   }
@@ -902,25 +1220,24 @@ function flushAudioQueue() {
     if (!audioStarted) {
       audioStarted = true;
 
-      audio.play().catch(() => {
+      audio.play().then(() => {
         $("audioStatus").textContent =
-          "音声再生には画面の操作が必要です";
+          "音声再生中";
+
+      }).catch(() => {
+        $("audioStatus").textContent =
+          "音声再生には操作が必要です";
       });
     }
 
-    /*
-     * 遅延が大きくなった場合は
-     * 再生位置をライブ側に近づける。
-     */
-    if (
-      audio.buffered.length &&
-      audio.readyState >= 2
-    ) {
+    if (audio.buffered.length) {
       const end = audio.buffered.end(
         audio.buffered.length - 1
       );
 
-      if (end - audio.currentTime > 1.5) {
+      if (
+        end - audio.currentTime > 1.5
+      ) {
         audio.currentTime = Math.max(
           0,
           end - 0.4
@@ -929,10 +1246,13 @@ function flushAudioQueue() {
     }
 
   } catch (error) {
-    console.warn("Audio append:", error);
+    console.warn(
+      "Audio append:",
+      error
+    );
 
     $("audioStatus").textContent =
-      `音声デコードエラー: ${error.message}`;
+      `音声再生エラー: ${error.message}`;
   }
 }
 
@@ -947,15 +1267,10 @@ function receiveAudio(buffer) {
     }
   }
 
-  /*
-   * キューが増えすぎた場合は
-   * 音声遅延を警告。
-   *
-   * WebMチャンクを途中で捨てると
-   * デコードが壊れる可能性があるため、
-   * 無条件に間引かない。
-   */
-  if (pendingAudioBytes > 2 * 1024 * 1024) {
+  if (
+    pendingAudioBytes >
+    2 * 1024 * 1024
+  ) {
     $("audioStatus").textContent =
       "音声バッファが増加しています";
 
@@ -963,6 +1278,7 @@ function receiveAudio(buffer) {
   }
 
   audioQueue.push(buffer);
+
   pendingAudioBytes += buffer.byteLength;
 
   flushAudioQueue();
@@ -976,18 +1292,25 @@ async function startSender() {
   if (role || senderStarting) return;
 
   if (ws?.readyState !== WebSocket.OPEN) {
-    status("WebSocketに接続されていません");
+    status(
+      "WebSocketに接続されていません"
+    );
+
     return;
   }
 
   const room = $("roomId").value;
 
   if (!room.trim()) {
-    status("ルームIDを入力してください");
+    status(
+      "ルームIDを入力してください"
+    );
+
     return;
   }
 
   senderStarting = true;
+
   updateButtons();
 
   const settings = readSettings();
@@ -999,17 +1322,18 @@ async function startSender() {
         audio: settings.audio
       });
 
-    role = "sender";
-    currentRoom = room;
-    appliedSettings = settings;
-
-    const track = localStream.getVideoTracks()[0];
+    const track =
+      localStream.getVideoTracks()[0];
 
     if (!track) {
       throw new Error(
         "映像トラックを取得できませんでした"
       );
     }
+
+    role = "sender";
+    currentRoom = room;
+    appliedSettings = settings;
 
     track.onended = () => {
       stopSender(true);
@@ -1029,18 +1353,20 @@ async function startSender() {
 
     await startVideoCapture();
 
+    sentAudioBytes = 0;
+
     if (settings.audio) {
       startAudioCapture();
     }
-
-    senderHistory = {};
-    sentAudioBytes = 0;
 
     updateCaptureInfo();
     updateButtons();
     renderRooms();
 
-    status(`WebSocket配信開始: ${room}`);
+    status(
+      `WebSocket配信開始: ${room}\n` +
+      `映像処理: ${workerMode ? "Worker" : "Canvas"}`
+    );
 
   } catch (error) {
     stopVideoCapture();
@@ -1058,7 +1384,12 @@ async function startSender() {
     currentRoom = null;
     appliedSettings = null;
 
-    status(`画面共有エラー: ${error.message}`);
+    status(
+      `画面共有エラー: ${error.message}`
+    );
+
+    updateCaptureInfo();
+    renderRooms();
 
   } finally {
     senderStarting = false;
@@ -1087,7 +1418,9 @@ function stopSender(sendLeave = true) {
   appliedSettings = null;
 
   $("localVideo").srcObject = null;
-  $("senderStats").textContent = "未配信";
+
+  $("senderStats").textContent =
+    "未配信";
 
   role = null;
   currentRoom = null;
@@ -1119,6 +1452,7 @@ async function applySettings() {
   }
 
   settingsApplying = true;
+
   updateButtons();
 
   try {
@@ -1130,7 +1464,6 @@ async function applySettings() {
       worker.postMessage({
         type: "settings",
         settings: {
-          fps: appliedSettings.fps,
           resolution: appliedSettings.resolution,
           jpegQuality: appliedSettings.jpegQuality
         }
@@ -1146,7 +1479,9 @@ async function applySettings() {
     status("設定を適用しました");
 
   } catch (error) {
-    status(`設定変更エラー: ${error.message}`);
+    status(
+      `設定変更エラー: ${error.message}`
+    );
 
   } finally {
     settingsApplying = false;
@@ -1168,6 +1503,7 @@ function clearVideoReceiver() {
   receivedVideoBytes = 0;
 
   receiverHistory = {};
+
   lastFrameAt = 0;
 
   remoteCanvas.width = 0;
@@ -1213,7 +1549,11 @@ async function decodeNextFrame() {
       try {
         bitmap = await createImageBitmap(blob);
       } catch (error) {
-        console.warn("JPEG decode:", error);
+        console.warn(
+          "JPEG decode:",
+          error
+        );
+
         continue;
       }
 
@@ -1225,15 +1565,23 @@ async function decodeNextFrame() {
         break;
       }
 
-      if (remoteCanvas.width !== bitmap.width) {
+      if (
+        remoteCanvas.width !== bitmap.width
+      ) {
         remoteCanvas.width = bitmap.width;
       }
 
-      if (remoteCanvas.height !== bitmap.height) {
+      if (
+        remoteCanvas.height !== bitmap.height
+      ) {
         remoteCanvas.height = bitmap.height;
       }
 
-      remoteContext.drawImage(bitmap, 0, 0);
+      remoteContext.drawImage(
+        bitmap,
+        0,
+        0
+      );
 
       bitmap.close();
 
@@ -1285,17 +1633,26 @@ function handleBinary(buffer) {
 
 function startReceiver(room = $("roomId").value) {
   if (!room.trim()) {
-    status("ルームIDを入力してください");
+    status(
+      "ルームIDを入力してください"
+    );
+
     return;
   }
 
   if (ws?.readyState !== WebSocket.OPEN) {
-    status("WebSocketに接続されていません");
+    status(
+      "WebSocketに接続されていません"
+    );
+
     return;
   }
 
   if (role === "sender" || senderStarting) {
-    status("配信中は受信できません");
+    status(
+      "配信中は受信できません"
+    );
+
     return;
   }
 
@@ -1321,7 +1678,9 @@ function startReceiver(room = $("roomId").value) {
 
   updateButtons();
 
-  status(`受信待機中: ${room}`);
+  status(
+    `受信待機中: ${room}`
+  );
 }
 
 /* ========================================
@@ -1343,7 +1702,8 @@ function stopReceiver(sendLeave = true) {
     });
   }
 
-  $("receiverStats").textContent = "未接続";
+  $("receiverStats").textContent =
+    "未接続";
 
   updateButtons();
 
@@ -1351,11 +1711,25 @@ function stopReceiver(sendLeave = true) {
 }
 
 /* ========================================
-   メッセージ
+   サーバーメッセージ
 ======================================== */
 
 function handleMessage(data) {
   switch (data.type) {
+
+    case "hello": {
+      status(
+        `✅ WebSocket接続完了\n` +
+        `サーバーバージョン: ${data.version}`
+      );
+
+      break;
+    }
+
+    case "pong": {
+      lastPong = Date.now();
+      break;
+    }
 
     case "room-list": {
       activeRooms = data.rooms || [];
@@ -1381,13 +1755,18 @@ function handleMessage(data) {
         break;
       }
 
-      status(`ルーム参加: ${data.room}`);
+      status(
+        `ルーム参加: ${data.room}`
+      );
+
       break;
     }
 
     case "sender-ready": {
       if (role === "receiver") {
-        status("WebSocket映像を受信中...");
+        status(
+          "WebSocket映像を受信中..."
+        );
       }
 
       break;
@@ -1401,22 +1780,25 @@ function handleMessage(data) {
         $("receiverStats").textContent =
           "配信終了";
 
-        status("配信が終了しました");
+        status(
+          "配信が終了しました"
+        );
       }
 
       break;
     }
 
     case "error": {
-      status(`エラー: ${data.message}`);
+      status(
+        `エラー: ${data.message}`
+      );
 
-      /*
-       * 配信開始時のエラーなら
-       * 画面共有を停止する。
-       */
       if (role === "sender") {
         stopSender(true);
-        status(`エラー: ${data.message}`);
+
+        status(
+          `エラー: ${data.message}`
+        );
       }
 
       break;
@@ -1452,7 +1834,6 @@ function renderRooms() {
       "現在、ほかに配信中のルームはありません。";
 
     container.appendChild(p);
-
     return;
   }
 
@@ -1500,13 +1881,12 @@ function renderRooms() {
     };
 
     card.appendChild(button);
-
     container.appendChild(card);
   }
 }
 
 /* ========================================
-   メタデータ更新
+   名前・メモ更新
 ======================================== */
 
 function updateMetadata() {
@@ -1652,6 +2032,18 @@ ${lastFrameAt
 }
 
 /* ========================================
+   接続監視
+======================================== */
+
+function heartbeat() {
+  if (ws?.readyState === WebSocket.OPEN) {
+    signal({
+      type: "ping"
+    });
+  }
+}
+
+/* ========================================
    イベント
 ======================================== */
 
@@ -1716,3 +2108,4 @@ updateButtons();
 updatePreview();
 
 setInterval(updateStats, 1000);
+setInterval(heartbeat, 15000);
