@@ -10,6 +10,10 @@ const server = http.createServer(app);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/* ========================================
+   HTML / JavaScript
+======================================== */
+
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
@@ -22,30 +26,82 @@ app.get("/websocket.js", (req, res) => {
   res.sendFile(path.join(__dirname, "websocket.js"));
 });
 
+/* ========================================
+   WebSocketサーバー
+======================================== */
+
 /*
- * 従来のWebRTCシグナリング
+ * WebRTCシグナリング専用
  */
 const wss = new WebSocketServer({
-  server,
-  path: "/signal",
+  noServer: true,
   maxPayload: 1024 * 1024
 });
 
 /*
- * WebSocket映像専用
+ * WebSocket映像配信専用
  */
 const videoWSS = new WebSocketServer({
-  server,
-  path: "/video",
+  noServer: true,
   maxPayload: 2 * 1024 * 1024,
   perMessageDeflate: false
 });
 
-const rooms = new Map();
-
 /*
- * WebSocket映像専用ルーム
+ * v25.1
+ *
+ * HTTP Upgradeを明示的に振り分ける。
+ *
+ * 複数のWebSocketServerが同じUpgradeを
+ * 処理しないようにする。
  */
+server.on("upgrade", (request, socket, head) => {
+  let pathname;
+
+  try {
+    pathname = new URL(
+      request.url,
+      "http://localhost"
+    ).pathname;
+  } catch {
+    socket.destroy();
+    return;
+  }
+
+  if (pathname === "/signal") {
+    wss.handleUpgrade(
+      request,
+      socket,
+      head,
+      ws => {
+        wss.emit("connection", ws, request);
+      }
+    );
+
+    return;
+  }
+
+  if (pathname === "/video") {
+    videoWSS.handleUpgrade(
+      request,
+      socket,
+      head,
+      ws => {
+        videoWSS.emit("connection", ws, request);
+      }
+    );
+
+    return;
+  }
+
+  socket.destroy();
+});
+
+/* ========================================
+   ルーム管理
+======================================== */
+
+const rooms = new Map();
 const videoRooms = new Map();
 
 function send(ws, data) {
@@ -377,7 +433,7 @@ wss.on("connection", ws => {
 });
 
 /* ========================================
-   WebSocket映像専用
+   WebSocket映像ルーム一覧
 ======================================== */
 
 function videoRoomList() {
@@ -408,6 +464,10 @@ function broadcastVideoRooms() {
   }
 }
 
+/* ========================================
+   WebSocket映像ルーム退出
+======================================== */
+
 function leaveVideo(ws) {
   const info = ws.videoRoomInfo;
   if (!info) return;
@@ -437,6 +497,10 @@ function leaveVideo(ws) {
   broadcastVideoRooms();
 }
 
+/* ========================================
+   WebSocket映像配信
+======================================== */
+
 videoWSS.on("connection", ws => {
   send(ws, {
     type: "room-list",
@@ -447,7 +511,7 @@ videoWSS.on("connection", ws => {
   ws.on("message", (raw, isBinary) => {
 
     /*
-     * JPEGフレームをそのまま転送。
+     * JPEG画像を受信者へ中継
      */
     if (isBinary) {
       const info = ws.videoRoomInfo;
@@ -510,6 +574,9 @@ videoWSS.on("connection", ws => {
         return;
       }
 
+      /*
+       * 重複配信の拒否
+       */
       if (
         data.role === "sender" &&
         videoRooms.get(id)?.sender &&
@@ -519,6 +586,7 @@ videoWSS.on("connection", ws => {
           type: "error",
           message: "このルームでは既に配信中です"
         });
+
         return;
       }
 
@@ -606,8 +674,14 @@ videoWSS.on("connection", ws => {
   ws.on("error", () => leaveVideo(ws));
 });
 
+/* ========================================
+   起動
+======================================== */
+
 const PORT = process.env.PORT || 10000;
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`WebRTC Caster v25 running on port ${PORT}`);
+  console.log(
+    `WebRTC Caster v25.1 running on port ${PORT}`
+  );
 });
