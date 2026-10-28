@@ -14,13 +14,39 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
+app.get("/websocket.html", (req, res) => {
+  res.sendFile(path.join(__dirname, "websocket.html"));
+});
+
+app.get("/websocket.js", (req, res) => {
+  res.sendFile(path.join(__dirname, "websocket.js"));
+});
+
+/*
+ * 従来のWebRTCシグナリング
+ */
 const wss = new WebSocketServer({
   server,
   path: "/signal",
   maxPayload: 1024 * 1024
 });
 
+/*
+ * WebSocket映像専用
+ */
+const videoWSS = new WebSocketServer({
+  server,
+  path: "/video",
+  maxPayload: 2 * 1024 * 1024,
+  perMessageDeflate: false
+});
+
 const rooms = new Map();
+
+/*
+ * WebSocket映像専用ルーム
+ */
+const videoRooms = new Map();
 
 function send(ws, data) {
   if (ws?.readyState === WebSocket.OPEN) {
@@ -75,17 +101,21 @@ function roman(n) {
   return result;
 }
 
-function nextRoomID() {
+function nextRoomID(map) {
   for (let i = 1; i <= 3999; i++) {
     const id = roman(i);
 
-    if (!rooms.has(id)) {
+    if (!map.has(id)) {
       return id;
     }
   }
 
   return crypto.randomUUID().slice(0, 8);
 }
+
+/* ========================================
+   WebRTCルーム一覧
+======================================== */
 
 function activeRooms() {
   const list = [];
@@ -107,13 +137,17 @@ function broadcastRooms() {
   const data = {
     type: "room-list",
     rooms: activeRooms(),
-    suggestedRoom: nextRoomID()
+    suggestedRoom: nextRoomID(rooms)
   };
 
   for (const client of wss.clients) {
     send(client, data);
   }
 }
+
+/* ========================================
+   WebRTC退出
+======================================== */
 
 function leave(ws) {
   const info = ws.roomInfo;
@@ -133,6 +167,7 @@ function leave(ws) {
 
     room.receivers.clear();
     rooms.delete(info.room);
+
   } else if (info.role === "receiver") {
     room.receivers.delete(info.id);
 
@@ -149,11 +184,15 @@ function leave(ws) {
   broadcastRooms();
 }
 
+/* ========================================
+   WebRTCシグナリング（v22.2）
+======================================== */
+
 wss.on("connection", ws => {
   send(ws, {
     type: "room-list",
     rooms: activeRooms(),
-    suggestedRoom: nextRoomID()
+    suggestedRoom: nextRoomID(rooms)
   });
 
   ws.on("message", raw => {
@@ -235,6 +274,7 @@ wss.on("connection", ws => {
             receiverId
           });
         }
+
       } else {
         const receiverId = crypto.randomUUID();
 
@@ -336,8 +376,238 @@ wss.on("connection", ws => {
   ws.on("error", () => leave(ws));
 });
 
+/* ========================================
+   WebSocket映像専用
+======================================== */
+
+function videoRoomList() {
+  const list = [];
+
+  for (const [id, room] of videoRooms) {
+    if (room.sender) {
+      list.push({
+        id,
+        name: room.name,
+        memo: room.memo
+      });
+    }
+  }
+
+  return list;
+}
+
+function broadcastVideoRooms() {
+  const data = {
+    type: "room-list",
+    rooms: videoRoomList(),
+    suggestedRoom: nextRoomID(videoRooms)
+  };
+
+  for (const client of videoWSS.clients) {
+    send(client, data);
+  }
+}
+
+function leaveVideo(ws) {
+  const info = ws.videoRoomInfo;
+  if (!info) return;
+
+  ws.videoRoomInfo = null;
+
+  const room = videoRooms.get(info.room);
+  if (!room) return;
+
+  if (info.role === "sender" && room.sender === ws) {
+    for (const receiver of room.receivers) {
+      send(receiver, {
+        type: "sender-left"
+      });
+    }
+
+    videoRooms.delete(info.room);
+
+  } else if (info.role === "receiver") {
+    room.receivers.delete(ws);
+
+    if (!room.sender && room.receivers.size === 0) {
+      videoRooms.delete(info.room);
+    }
+  }
+
+  broadcastVideoRooms();
+}
+
+videoWSS.on("connection", ws => {
+  send(ws, {
+    type: "room-list",
+    rooms: videoRoomList(),
+    suggestedRoom: nextRoomID(videoRooms)
+  });
+
+  ws.on("message", (raw, isBinary) => {
+
+    /*
+     * JPEGフレームをそのまま転送。
+     */
+    if (isBinary) {
+      const info = ws.videoRoomInfo;
+
+      if (!info || info.role !== "sender") return;
+
+      const room = videoRooms.get(info.room);
+
+      if (!room || room.sender !== ws) return;
+
+      if (
+        raw.length === 0 ||
+        raw.length > 1024 * 1024
+      ) {
+        return;
+      }
+
+      for (const receiver of room.receivers) {
+        if (
+          receiver.readyState === WebSocket.OPEN &&
+          receiver.bufferedAmount < 2 * 1024 * 1024
+        ) {
+          receiver.send(raw, {
+            binary: true
+          });
+        }
+      }
+
+      return;
+    }
+
+    let data;
+
+    try {
+      data = JSON.parse(raw.toString());
+    } catch {
+      return;
+    }
+
+    if (data.type === "leave") {
+      leaveVideo(ws);
+      return;
+    }
+
+    if (data.type === "join") {
+      const id = data.room;
+
+      if (!validRoom(id)) {
+        send(ws, {
+          type: "error",
+          message: "ルームIDは1〜100文字で入力してください"
+        });
+        return;
+      }
+
+      if (
+        data.role !== "sender" &&
+        data.role !== "receiver"
+      ) {
+        return;
+      }
+
+      if (
+        data.role === "sender" &&
+        videoRooms.get(id)?.sender &&
+        videoRooms.get(id).sender !== ws
+      ) {
+        send(ws, {
+          type: "error",
+          message: "このルームでは既に配信中です"
+        });
+        return;
+      }
+
+      leaveVideo(ws);
+
+      let room = videoRooms.get(id);
+
+      if (!room) {
+        room = {
+          sender: null,
+          receivers: new Set(),
+          name: "ゲスト",
+          memo: ""
+        };
+
+        videoRooms.set(id, room);
+      }
+
+      if (data.role === "sender") {
+        room.sender = ws;
+        room.name = cleanName(data.name);
+        room.memo = cleanMemo(data.memo);
+
+        ws.videoRoomInfo = {
+          room: id,
+          role: "sender"
+        };
+
+        send(ws, {
+          type: "joined",
+          role: "sender",
+          room: id
+        });
+
+        for (const receiver of room.receivers) {
+          send(receiver, {
+            type: "sender-ready"
+          });
+        }
+
+      } else {
+        room.receivers.add(ws);
+
+        ws.videoRoomInfo = {
+          room: id,
+          role: "receiver"
+        };
+
+        send(ws, {
+          type: "joined",
+          role: "receiver",
+          room: id
+        });
+
+        if (room.sender) {
+          send(ws, {
+            type: "sender-ready"
+          });
+        }
+      }
+
+      broadcastVideoRooms();
+      return;
+    }
+
+    const info = ws.videoRoomInfo;
+    if (!info) return;
+
+    const room = videoRooms.get(info.room);
+    if (!room) return;
+
+    if (
+      data.type === "update-room" &&
+      info.role === "sender" &&
+      room.sender === ws
+    ) {
+      room.name = cleanName(data.name);
+      room.memo = cleanMemo(data.memo);
+
+      broadcastVideoRooms();
+    }
+  });
+
+  ws.on("close", () => leaveVideo(ws));
+  ws.on("error", () => leaveVideo(ws));
+});
+
 const PORT = process.env.PORT || 10000;
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`WebRTC Caster v21 running on port ${PORT}`);
+  console.log(`WebRTC Caster v25 running on port ${PORT}`);
 });
