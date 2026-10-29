@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-<title>WebRTC Caster v27.1</title>
+<title>WebRTC Caster v27.5.1</title>
 
 <style>
 * {
@@ -112,21 +112,94 @@ button:disabled {
   border-color: #587ac0;
 }
 
+/* ========================================
+   v27.5.1 アスペクト比修正
+======================================== */
+
+/*
+ * video/canvas共通の強制サイズ指定を撤去。
+ * それぞれの映像の元の縦横比を維持する。
+ */
+
 video,
 canvas {
-  width: 100%;
+  display: block;
   background: black;
   border-radius: 8px;
-  max-height: 65vh;
 }
+
+/*
+ * 送信プレビュー
+ */
 
 #localVideo {
+  width: 100%;
+  height: auto;
+  max-width: 100%;
   max-height: 300px;
+  object-fit: contain;
 }
 
-#remoteCanvas {
-  aspect-ratio: 16 / 9;
+/*
+ * WebRTC受信映像
+ */
+
+#remoteVideo {
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  max-height: 65vh;
+  object-fit: contain;
 }
+
+/*
+ * WebSocket受信Canvas
+ *
+ * aspect-ratio: 16 / 9 は撤去。
+ *
+ * JavaScriptが設定する
+ * canvas.width / canvas.height を
+ * 本来のアスペクト比として使用する。
+ */
+
+#remoteCanvas {
+  display: block;
+
+  width: 100%;
+  height: auto;
+
+  max-width: 100%;
+  max-height: 65vh;
+
+  object-fit: contain;
+
+  aspect-ratio: auto;
+}
+
+/*
+ * 全画面表示では映像全体を収める。
+ */
+
+#remoteVideo:fullscreen,
+#remoteCanvas:fullscreen {
+  width: 100vw;
+  height: 100vh;
+
+  max-width: none;
+  max-height: none;
+
+  margin: 0;
+  padding: 0;
+
+  border-radius: 0;
+  background: black;
+
+  object-fit: contain;
+}
+
+/* ========================================
+   その他UI
+======================================== */
 
 pre {
   background: #101114;
@@ -248,20 +321,10 @@ pre {
   display: none;
 }
 
-/*
- * 以前のJavaScriptとの互換性のため、
- * 従来のルーム一覧は内部に残す。
- *
- * 画面には統合ルーム一覧だけを表示する。
- */
 #legacyRoomSection {
   display: none;
 }
 
-/*
- * 音声診断用の要素は、
- * JavaScriptの互換性維持のため残す。
- */
 #audioDiagnosticCompatibility {
   display: none;
 }
@@ -286,10 +349,10 @@ pre {
 
 <main>
 
-<h1>📡 WebRTC Caster v27.1</h1>
+<h1>📡 WebRTC Caster v27.5.1</h1>
 
 <p class="subtitle">
-Unified Room Edition
+Unified Room Edition / Aspect Ratio Fix
 </p>
 
 <section>
@@ -636,10 +699,6 @@ Unified Room Edition
   </pre>
 </section>
 
-<!--
-  旧JavaScriptとの互換性維持用
--->
-
 <section id="legacyRoomSection">
 
   <p id="roomCount"></p>
@@ -647,11 +706,6 @@ Unified Room Edition
   <div id="roomList"></div>
 
 </section>
-
-<!--
-  音声診断の内部互換要素。
-  画面には表示しない。
--->
 
 <div id="audioDiagnosticCompatibility">
 
@@ -799,10 +853,6 @@ const roomReconnectTimers = {
   ws: null
 };
 
-/*
- * 配信者自身のルームを
- * 一覧から除外するための情報。
- */
 let ownRoom = null;
 let ownMode = null;
 
@@ -1012,10 +1062,6 @@ const AUTO_JOIN_KEY =
 
 function watchRoom(room) {
 
-  /*
-   * 自分が配信中なら、
-   * 視聴への切り替えは行わない。
-   */
   if (ownRoom !== null) {
     $("status").textContent =
       "配信中は別のルームを視聴できません。" +
@@ -1024,10 +1070,6 @@ function watchRoom(room) {
     return;
   }
 
-  /*
-   * 同じ通信方式なら、
-   * ページを再読み込みせず受信。
-   */
   if (room.mode === mode) {
 
     sessionStorage.removeItem(AUTO_JOIN_KEY);
@@ -1049,10 +1091,6 @@ function watchRoom(room) {
     return;
   }
 
-  /*
-   * 異なる方式なら、
-   * 受信するルームを保存して切り替える。
-   */
   sessionStorage.setItem(
     AUTO_JOIN_KEY,
     JSON.stringify({
@@ -1093,12 +1131,6 @@ function restoreAutoJoin() {
     return;
   }
 
-  /*
-   * 通信プログラムの接続完了を待って
-   * 受信ボタンを押す。
-   *
-   * 最大15秒待機。
-   */
   const startedAt = Date.now();
 
   const timer = setInterval(() => {
@@ -1118,11 +1150,6 @@ function restoreAutoJoin() {
 
       $("roomId").value = pending.room;
 
-      /*
-       * 手動入力扱いにすることで、
-       * サーバーのルーム提案による
-       * 上書きを防ぐ。
-       */
       $("roomId").dataset.edited = "1";
 
       $("receiveButton").click();
@@ -1162,12 +1189,6 @@ $("sendButton").addEventListener(
   "click",
   () => {
 
-    /*
-     * 実際の配信開始が成功したかどうかは
-     * この時点では確定していない。
-     *
-     * そのため、後続の状態表示を確認する。
-     */
     const room = $("roomId").value;
 
     const observer = new MutationObserver(() => {
