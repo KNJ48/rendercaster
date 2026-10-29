@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-<title>WebRTC Caster v27</title>
+<title>WebRTC Caster v27.1</title>
 
 <style>
 * {
@@ -185,15 +185,17 @@ pre {
   overflow-wrap: anywhere;
 }
 
-.room-name,
-.room-memo {
+.room-name {
   color: #bbb;
   margin-top: 8px;
   overflow-wrap: anywhere;
 }
 
 .room-memo {
+  color: #aaa;
+  margin-top: 8px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .room-watch {
@@ -210,6 +212,10 @@ pre {
   color: #ffbd59;
 }
 
+.success {
+  color: #5fe09a;
+}
+
 .hidden {
   display: none !important;
 }
@@ -219,7 +225,44 @@ pre {
   font-size: 14px;
 }
 
+.mode-badge {
+  display: inline-block;
+  padding: 4px 9px;
+  margin-top: 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.badge-rtc {
+  color: #95c7ff;
+  background: #203a59;
+}
+
+.badge-ws {
+  color: #a7efc2;
+  background: #205039;
+}
+
 #remoteAudio {
+  display: none;
+}
+
+/*
+ * 以前のJavaScriptとの互換性のため、
+ * 従来のルーム一覧は内部に残す。
+ *
+ * 画面には統合ルーム一覧だけを表示する。
+ */
+#legacyRoomSection {
+  display: none;
+}
+
+/*
+ * 音声診断用の要素は、
+ * JavaScriptの互換性維持のため残す。
+ */
+#audioDiagnosticCompatibility {
   display: none;
 }
 
@@ -231,6 +274,10 @@ pre {
   section {
     padding: 15px;
   }
+
+  button {
+    padding: 10px 12px;
+  }
 }
 </style>
 </head>
@@ -239,30 +286,39 @@ pre {
 
 <main>
 
-<h1>📡 WebRTC Caster v27</h1>
+<h1>📡 WebRTC Caster v27.1</h1>
 
 <p class="subtitle">
-Unified Edition
+Unified Room Edition
 </p>
 
 <section>
   <h2>🌐 通信方式</h2>
 
-  <select id="mode">
-    <option value="rtc">
-      🚀 WebRTC（高速・低遅延）
-    </option>
+  <label>
+    配信・手動受信で使用する通信方式
 
-    <option value="ws">
-      🏫 WebSocket（互換モード）
-    </option>
-  </select>
+    <select id="mode">
 
-  <p id="modeDescription" class="mode-description"></p>
+      <option value="rtc">
+        🚀 WebRTC（高速・低遅延）
+      </option>
 
-  <p class="small warning">
-    通信方式を変更すると、現在の送受信を終了して
-    ページを再読み込みします。
+      <option value="ws">
+        🏫 WebSocket（互換モード）
+      </option>
+
+    </select>
+  </label>
+
+  <p
+    id="modeDescription"
+    class="mode-description"
+  ></p>
+
+  <p class="small">
+    配信一覧から視聴する場合は、
+    通信方式を自動的に切り替えます。
   </p>
 </section>
 
@@ -275,17 +331,31 @@ Unified Edition
 
   <label>
     ルームID
-    <input id="roomId" maxlength="100" value="I">
+
+    <input
+      id="roomId"
+      maxlength="100"
+      value="I"
+    >
   </label>
 
   <label>
     配信者名
-    <input id="senderName" maxlength="80" value="ゲスト">
+
+    <input
+      id="senderName"
+      maxlength="80"
+      value="ゲスト"
+    >
   </label>
 
   <label>
     メモ（任意）
-    <textarea id="roomMemo" maxlength="300"></textarea>
+
+    <textarea
+      id="roomMemo"
+      maxlength="300"
+    ></textarea>
   </label>
 
   <button id="sendButton">
@@ -295,6 +365,10 @@ Unified Edition
   <button id="stopButton" disabled>
     ■ 停止
   </button>
+
+  <p class="small">
+    配信者名とメモは配信中でも変更できます。
+  </p>
 </section>
 
 <section>
@@ -317,11 +391,27 @@ Unified Edition
       最大画質
 
       <select id="resolution">
-        <option value="360">360p</option>
-        <option value="480">480p</option>
-        <option value="720" selected>720p</option>
-        <option value="1080">1080p</option>
-        <option value="native">元画質</option>
+
+        <option value="360">
+          360p
+        </option>
+
+        <option value="480">
+          480p
+        </option>
+
+        <option value="720" selected>
+          720p
+        </option>
+
+        <option value="1080">
+          1080p
+        </option>
+
+        <option value="native">
+          元画質
+        </option>
+
       </select>
     </label>
 
@@ -341,7 +431,11 @@ Unified Edition
         品質優先度
 
         <select id="priority">
-          <option value="maintain-resolution">
+
+          <option
+            value="maintain-resolution"
+            selected
+          >
             解像度優先
           </option>
 
@@ -352,6 +446,7 @@ Unified Edition
           <option value="balanced">
             バランス
           </option>
+
         </select>
       </label>
 
@@ -359,6 +454,7 @@ Unified Edition
         コーデック
 
         <select id="codec">
+
           <option value="auto">
             ブラウザ自動
           </option>
@@ -370,6 +466,7 @@ Unified Edition
           <option value="vp8">
             VP8優先
           </option>
+
         </select>
       </label>
 
@@ -381,6 +478,7 @@ Unified Edition
         映像の種類
 
         <select id="hint">
+
           <option value="motion" selected>
             動き重視
           </option>
@@ -392,6 +490,7 @@ Unified Edition
           <option value="detail">
             細部重視
           </option>
+
         </select>
       </label>
 
@@ -399,13 +498,18 @@ Unified Edition
         ビットレート
 
         <select id="bitrate">
-          <option value="20000000">
+
+          <option
+            value="20000000"
+            selected
+          >
             最大20Mbps
           </option>
 
           <option value="auto">
             ブラウザ自動
           </option>
+
         </select>
       </label>
 
@@ -419,23 +523,49 @@ Unified Edition
       JPEG品質
 
       <select id="jpegQuality">
-        <option value="0.45">低</option>
-        <option value="0.65">標準</option>
-        <option value="0.8" selected>高画質</option>
-        <option value="0.92">最高画質</option>
+
+        <option value="0.45">
+          低
+        </option>
+
+        <option value="0.65">
+          標準
+        </option>
+
+        <option value="0.8" selected>
+          高画質
+        </option>
+
+        <option value="0.92">
+          最高画質
+        </option>
+
       </select>
     </label>
 
   </div>
 
   <label class="checkbox">
-    <input type="checkbox" id="audioShare" checked>
+
+    <input
+      type="checkbox"
+      id="audioShare"
+      checked
+    >
+
     音声共有
+
   </label>
 
   <label class="checkbox">
-    <input type="checkbox" id="preview">
+
+    <input
+      type="checkbox"
+      id="preview"
+    >
+
     送信プレビューを表示
+
   </label>
 
   <button id="applyButton" disabled>
@@ -445,44 +575,15 @@ Unified Edition
   <div id="captureInfo" class="status">
     画面共有を開始すると情報を表示します。
   </div>
-</section>
 
-<section>
-  <h2>🎧 音声診断</h2>
-
-  <p class="small">
-    画面共有で取得した音声を確認します。
-    配信前の音声がおかしいのか、
-    通信後におかしくなるのか調べられます。
-  </p>
-
-  <button id="audioMonitorButton" disabled>
-    🎧 取得音声を試聴
-  </button>
-
-  <button id="audioProcessingButton" disabled>
-    🎵 音声処理OFFを試す
-  </button>
-
-  <pre id="audioDiagnostics">
-音声トラック未取得
-  </pre>
-
-  <audio
-    id="audioMonitor"
-    playsinline
-  ></audio>
-
-  <p class="small warning">
-    試聴すると元の音と二重に聞こえる場合があります。
-    ヘッドホンでの確認を推奨します。
-  </p>
 </section>
 
 <section>
   <h2>📊 送信統計</h2>
 
-  <pre id="senderStats">未配信</pre>
+  <pre id="senderStats">
+未配信
+  </pre>
 </section>
 
 <section>
@@ -530,17 +631,65 @@ Unified Edition
 <section>
   <h2>📊 受信統計</h2>
 
-  <pre id="receiverStats">未接続</pre>
+  <pre id="receiverStats">
+未接続
+  </pre>
 </section>
+
+<!--
+  旧JavaScriptとの互換性維持用
+-->
+
+<section id="legacyRoomSection">
+
+  <p id="roomCount"></p>
+
+  <div id="roomList"></div>
+
+</section>
+
+<!--
+  音声診断の内部互換要素。
+  画面には表示しない。
+-->
+
+<div id="audioDiagnosticCompatibility">
+
+  <button
+    id="audioMonitorButton"
+    disabled
+  ></button>
+
+  <button
+    id="audioProcessingButton"
+    disabled
+  ></button>
+
+  <pre id="audioDiagnostics"></pre>
+
+  <audio
+    id="audioMonitor"
+    playsinline
+  ></audio>
+
+</div>
 
 <section>
   <h2>📡 配信中のルーム一覧</h2>
 
-  <p id="roomCount" class="small">
-    読み込み中...
+  <p class="small">
+    WebRTC・WebSocketの両方の配信を表示します。
+    視聴時には通信方式を自動選択します。
   </p>
 
-  <div id="roomList"></div>
+  <p
+    id="allRoomCount"
+    class="small"
+  >
+    ルーム一覧を取得中...
+  </p>
+
+  <div id="allRoomList"></div>
 </section>
 
 </main>
@@ -548,8 +697,11 @@ Unified Edition
 <script>
 "use strict";
 
-const modeSelect =
-  document.getElementById("mode");
+/* ========================================
+   基本設定
+======================================== */
+
+const $ = id => document.getElementById(id);
 
 const params =
   new URLSearchParams(location.search);
@@ -559,10 +711,13 @@ const mode =
     ? "ws"
     : "rtc";
 
+const modeSelect = $("mode");
+
 modeSelect.value = mode;
 
-const fpsSelect =
-  document.getElementById("fps");
+/* ========================================
+   FPS選択肢
+======================================== */
 
 function addFPS(value, label) {
   const option = document.createElement("option");
@@ -570,10 +725,11 @@ function addFPS(value, label) {
   option.value = value;
   option.textContent = label;
 
-  fpsSelect.appendChild(option);
+  $("fps").appendChild(option);
 }
 
 if (mode === "rtc") {
+
   addFPS("auto", "自動");
   addFPS("15", "15");
   addFPS("30", "30");
@@ -581,70 +737,522 @@ if (mode === "rtc") {
   addFPS("120", "120（実験）");
   addFPS("browser", "制限なし");
 
-  fpsSelect.value = "30";
+  $("fps").value = "30";
 
-  document.getElementById(
-    "wsSettings"
-  ).classList.add("hidden");
+  $("wsSettings").classList.add("hidden");
+  $("remoteCanvas").classList.add("hidden");
 
-  document.getElementById(
-    "remoteCanvas"
-  ).classList.add("hidden");
-
-  document.getElementById(
-    "modeDescription"
-  ).textContent =
-    "WebRTCで端末同士を直接接続します。高画質・低遅延向けです。";
+  $("modeDescription").textContent =
+    "WebRTCで端末同士を直接接続します。" +
+    "高画質・低遅延向けです。";
 
 } else {
+
   for (const fps of [5, 10, 15, 20, 30, 60]) {
-    addFPS(String(fps), String(fps));
+    addFPS(
+      String(fps),
+      fps === 60 ? "60（実験）" : String(fps)
+    );
   }
 
-  fpsSelect.value = "30";
+  $("fps").value = "30";
 
-  document.getElementById(
-    "rtcSettings"
-  ).classList.add("hidden");
+  $("rtcSettings").classList.add("hidden");
+  $("remoteVideo").classList.add("hidden");
+  $("remoteCanvas").classList.remove("hidden");
 
-  document.getElementById(
-    "remoteVideo"
-  ).classList.add("hidden");
+  $("modeDescription").textContent =
+    "WebSocketでサーバーを経由します。" +
+    "学校ネットワーク向けです。";
+}
 
-  document.getElementById(
-    "remoteCanvas"
-  ).classList.remove("hidden");
+/* ========================================
+   通信方式切り替え
+======================================== */
 
-  document.getElementById(
-    "modeDescription"
-  ).textContent =
-    "WebSocketでRenderサーバーを経由します。学校ネットワーク向けの互換モードです。";
+function modeURL(targetMode) {
+  return targetMode === "ws"
+    ? "/?mode=ws"
+    : "/";
 }
 
 modeSelect.addEventListener("change", () => {
-  const value = modeSelect.value;
-
-  const url =
-    value === "ws"
-      ? "/?mode=ws"
-      : "/";
-
-  location.href = url;
+  location.href = modeURL(modeSelect.value);
 });
+
+/* ========================================
+   統合ルーム一覧
+======================================== */
+
+const roomState = {
+  rtc: [],
+  ws: []
+};
+
+const roomSockets = {
+  rtc: null,
+  ws: null
+};
+
+const roomReconnectTimers = {
+  rtc: null,
+  ws: null
+};
+
+/*
+ * 配信者自身のルームを
+ * 一覧から除外するための情報。
+ */
+let ownRoom = null;
+let ownMode = null;
+
+/* ========================================
+   ルーム一覧専用WebSocket
+======================================== */
+
+function connectRoomSocket(targetMode) {
+
+  const existing = roomSockets[targetMode];
+
+  if (
+    existing &&
+    (
+      existing.readyState === WebSocket.OPEN ||
+      existing.readyState === WebSocket.CONNECTING
+    )
+  ) {
+    return;
+  }
+
+  const protocol =
+    location.protocol === "https:"
+      ? "wss:"
+      : "ws:";
+
+  const endpoint =
+    targetMode === "rtc"
+      ? "/signal"
+      : "/video";
+
+  const socket = new WebSocket(
+    `${protocol}//${location.host}${endpoint}`
+  );
+
+  roomSockets[targetMode] = socket;
+
+  socket.onmessage = event => {
+
+    if (roomSockets[targetMode] !== socket) {
+      return;
+    }
+
+    if (typeof event.data !== "string") {
+      return;
+    }
+
+    let data;
+
+    try {
+      data = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    if (data.type === "room-list") {
+      roomState[targetMode] = data.rooms || [];
+
+      renderAllRooms();
+    }
+  };
+
+  socket.onclose = () => {
+
+    if (roomSockets[targetMode] !== socket) {
+      return;
+    }
+
+    roomSockets[targetMode] = null;
+    roomState[targetMode] = [];
+
+    renderAllRooms();
+
+    clearTimeout(
+      roomReconnectTimers[targetMode]
+    );
+
+    roomReconnectTimers[targetMode] =
+      setTimeout(() => {
+        connectRoomSocket(targetMode);
+      }, 3000);
+  };
+
+  socket.onerror = () => {
+    // oncloseで再接続する。
+  };
+}
+
+/* ========================================
+   統合ルーム一覧表示
+======================================== */
+
+function renderAllRooms() {
+
+  const container = $("allRoomList");
+
+  container.replaceChildren();
+
+  const allRooms = [];
+
+  for (const room of roomState.rtc) {
+    allRooms.push({
+      ...room,
+      mode: "rtc"
+    });
+  }
+
+  for (const room of roomState.ws) {
+    allRooms.push({
+      ...room,
+      mode: "ws"
+    });
+  }
+
+  const visible = allRooms.filter(room => {
+    return !(
+      ownRoom === room.id &&
+      ownMode === room.mode
+    );
+  });
+
+  $("allRoomCount").textContent =
+    `現在 ${visible.length} 件の配信があります`;
+
+  if (!visible.length) {
+
+    const p = document.createElement("p");
+
+    p.className = "small";
+
+    p.textContent =
+      "現在、配信中のルームはありません。";
+
+    container.appendChild(p);
+
+    return;
+  }
+
+  for (const room of visible) {
+
+    const card = document.createElement("div");
+
+    card.className = "room-card";
+
+    const title = document.createElement("div");
+
+    title.className = "room-title";
+    title.textContent = `🟢 ${room.id}`;
+
+    card.appendChild(title);
+
+    const badge = document.createElement("span");
+
+    badge.className =
+      "mode-badge " +
+      (
+        room.mode === "rtc"
+          ? "badge-rtc"
+          : "badge-ws"
+      );
+
+    badge.textContent =
+      room.mode === "rtc"
+        ? "🚀 WebRTC"
+        : "🏫 WebSocket";
+
+    card.appendChild(badge);
+
+    const name = document.createElement("div");
+
+    name.className = "room-name";
+    name.textContent = `配信者：${room.name}`;
+
+    card.appendChild(name);
+
+    if (room.memo) {
+
+      const memo = document.createElement("div");
+
+      memo.className = "room-memo";
+      memo.textContent = room.memo;
+
+      card.appendChild(memo);
+    }
+
+    const button = document.createElement("button");
+
+    button.className = "room-watch";
+    button.textContent = "📺 視聴";
+
+    button.onclick = () => {
+      watchRoom(room);
+    };
+
+    card.appendChild(button);
+
+    container.appendChild(card);
+  }
+}
+
+/* ========================================
+   自動視聴
+======================================== */
+
+const AUTO_JOIN_KEY =
+  "caster-v27-auto-join";
+
+function watchRoom(room) {
+
+  /*
+   * 自分が配信中なら、
+   * 視聴への切り替えは行わない。
+   */
+  if (ownRoom !== null) {
+    $("status").textContent =
+      "配信中は別のルームを視聴できません。" +
+      "先に配信を停止してください。";
+
+    return;
+  }
+
+  /*
+   * 同じ通信方式なら、
+   * ページを再読み込みせず受信。
+   */
+  if (room.mode === mode) {
+
+    sessionStorage.removeItem(AUTO_JOIN_KEY);
+
+    $("roomId").value = room.id;
+
+    $("receiveButton").click();
+
+    const target =
+      mode === "rtc"
+        ? $("remoteVideo")
+        : $("remoteCanvas");
+
+    target.scrollIntoView({
+      behavior: "smooth",
+      block: "center"
+    });
+
+    return;
+  }
+
+  /*
+   * 異なる方式なら、
+   * 受信するルームを保存して切り替える。
+   */
+  sessionStorage.setItem(
+    AUTO_JOIN_KEY,
+    JSON.stringify({
+      room: room.id,
+      mode: room.mode,
+      time: Date.now()
+    })
+  );
+
+  location.href = modeURL(room.mode);
+}
+
+/* ========================================
+   ページ切り替え後の自動参加
+======================================== */
+
+function restoreAutoJoin() {
+
+  let pending;
+
+  try {
+    pending = JSON.parse(
+      sessionStorage.getItem(AUTO_JOIN_KEY)
+    );
+  } catch {
+    sessionStorage.removeItem(AUTO_JOIN_KEY);
+    return;
+  }
+
+  if (!pending) return;
+
+  if (
+    pending.mode !== mode ||
+    typeof pending.room !== "string" ||
+    Date.now() - pending.time > 30000
+  ) {
+    sessionStorage.removeItem(AUTO_JOIN_KEY);
+    return;
+  }
+
+  /*
+   * 通信プログラムの接続完了を待って
+   * 受信ボタンを押す。
+   *
+   * 最大15秒待機。
+   */
+  const startedAt = Date.now();
+
+  const timer = setInterval(() => {
+
+    const text = $("status").textContent;
+
+    const connected =
+      mode === "rtc"
+        ? text.includes("シグナリング接続完了")
+        : text.includes("WebSocket接続完了");
+
+    if (connected) {
+
+      clearInterval(timer);
+
+      sessionStorage.removeItem(AUTO_JOIN_KEY);
+
+      $("roomId").value = pending.room;
+
+      /*
+       * 手動入力扱いにすることで、
+       * サーバーのルーム提案による
+       * 上書きを防ぐ。
+       */
+      $("roomId").dataset.edited = "1";
+
+      $("receiveButton").click();
+
+      const target =
+        mode === "rtc"
+          ? $("remoteVideo")
+          : $("remoteCanvas");
+
+      target.scrollIntoView({
+        behavior: "smooth",
+        block: "center"
+      });
+
+      return;
+    }
+
+    if (Date.now() - startedAt > 15000) {
+
+      clearInterval(timer);
+
+      sessionStorage.removeItem(AUTO_JOIN_KEY);
+
+      $("status").textContent =
+        "自動接続がタイムアウトしました。" +
+        "もう一度視聴ボタンを押してください。";
+    }
+
+  }, 200);
+}
+
+/* ========================================
+   自分の配信を追跡
+======================================== */
+
+$("sendButton").addEventListener(
+  "click",
+  () => {
+
+    /*
+     * 実際の配信開始が成功したかどうかは
+     * この時点では確定していない。
+     *
+     * そのため、後続の状態表示を確認する。
+     */
+    const room = $("roomId").value;
+
+    const observer = new MutationObserver(() => {
+
+      const text = $("status").textContent;
+
+      if (
+        text.includes("配信開始") ||
+        text.includes("配信開始準備中")
+      ) {
+
+        ownRoom = room;
+        ownMode = mode;
+
+        renderAllRooms();
+
+        observer.disconnect();
+      }
+
+      if (
+        text.includes("画面共有エラー") ||
+        text.includes("エラー:")
+      ) {
+        observer.disconnect();
+      }
+    });
+
+    observer.observe(
+      $("status"),
+      {
+        childList: true,
+        characterData: true,
+        subtree: true
+      }
+    );
+
+    setTimeout(() => {
+      observer.disconnect();
+    }, 30000);
+  },
+  true
+);
+
+$("stopButton").addEventListener(
+  "click",
+  () => {
+
+    ownRoom = null;
+    ownMode = null;
+
+    renderAllRooms();
+  }
+);
+
+/* ========================================
+   JavaScript読み込み
+======================================== */
 
 const script = document.createElement("script");
 
 script.src =
-  mode === "ws"
-    ? "/websocket.js"
-    : "/webrtc.js";
+  mode === "rtc"
+    ? "/webrtc.js"
+    : "/websocket.js";
+
+script.onload = () => {
+  restoreAutoJoin();
+};
 
 script.onerror = () => {
-  document.getElementById("status").textContent =
+  $("status").textContent =
     `通信プログラムを読み込めませんでした: ${script.src}`;
 };
 
 document.body.appendChild(script);
+
+/* ========================================
+   初期化
+======================================== */
+
+connectRoomSocket("rtc");
+connectRoomSocket("ws");
+
+renderAllRooms();
+
 </script>
 
 </body>
