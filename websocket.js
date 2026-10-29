@@ -5,8 +5,8 @@
 const $ = id => document.getElementById(id);
 
 /* ========================================
-   WebSocket Caster v27.4
-   AV Sync Experiment
+   WebSocket Caster v27.5
+   Stable AV Sync Edition
 ======================================== */
 
 const FRAME_VIDEO = 1;
@@ -14,54 +14,39 @@ const FRAME_AUDIO = 2;
 
 const MAX_BUFFER = 1024 * 1024;
 
-/*
-  v27.4 バイナリ形式
-
-  映像:
-  [1byte 種別]
-  [8byte タイムスタンプ]
-  [JPEG]
-
-  音声:
-  [1byte 種別]
-  [8byte タイムスタンプ]
-  [4byte サンプルレート]
-  [1byte チャンネル数]
-  [PCM Int16]
-
-  タイムスタンプはUnix時刻ミリ秒。
-  音声の時刻はチャンク先頭サンプルの推定時刻。
-*/
-
 const VIDEO_HEADER_SIZE = 8;
 const AUDIO_HEADER_SIZE = 13;
 
 /* ========================================
-   同期設定
+   音声同期設定
 ======================================== */
 
-const AUDIO_PACKET_MS = 20;
+// 通常時に確保する音声バッファ
+const AUDIO_TARGET_BUFFER_MS = 250;
 
-// 通常再生で確保する音声バッファ
-const AUDIO_TARGET_BUFFER_MS = 220;
+// この値を超えた状態が続いた場合に補正
+const AUDIO_MAX_BUFFER_MS = 1600;
 
-// 音声がこれ以上蓄積した場合に補正
-const AUDIO_MAX_BUFFER_MS = 1500;
+// 補正後に残す音声
+const AUDIO_RECOVERY_BUFFER_MS = 350;
 
-// 補正直後に残す音声
-const AUDIO_RECOVERY_BUFFER_MS = 250;
+// 補正の最短間隔
+const AUDIO_CORRECTION_COOLDOWN_MS = 5000;
 
-// 大きな補正の最短間隔
-const SYNC_COOLDOWN_MS = 5000;
+// バッファ超過が継続する必要がある時間
+const AUDIO_OVERFLOW_CONFIRM_MS = 500;
 
-// 映像フレーム保持数
+// 音声パケットの最大待機数
+const AUDIO_PENDING_LIMIT = 40;
+
+// 映像キュー
 const VIDEO_QUEUE_LIMIT = 120;
 
-// 映像フレームを待つ最大時間
-const VIDEO_MAX_WAIT_MS = 1500;
+// 音声時刻が古い場合の映像フォールバック
+const AUDIO_CLOCK_TIMEOUT_MS = 500;
 
-// タイムスタンプ補正の上限
-const MAX_CLOCK_OFFSET_MS = 10000;
+// 映像の最大待機時間
+const VIDEO_MAX_WAIT_MS = 1800;
 
 /* ========================================
    基本状態
@@ -107,14 +92,17 @@ let lastEncodeTime = 0;
 let workerFrameTimestamp = 0;
 
 /* ========================================
-   AudioWorklet
+   音声
 ======================================== */
 
 let audioContext = null;
 let audioSource = null;
 let audioNode = null;
-
 let audioWorkletURL = null;
+
+let audioGeneration = 0;
+let audioReady = false;
+let audioStarting = false;
 
 let audioMode = "なし";
 let audioSampleRate = 48000;
@@ -123,32 +111,22 @@ let audioChannels = 2;
 let audioSendSequence = 0;
 let audioReceiveSequence = 0;
 
-let audioCapturedAt = 0;
-
-let audioGeneration = 0;
-
-let audioReady = false;
-let audioStarting = false;
-
 let audioPlaybackTimestamp = 0;
 let audioPlaybackReportedAt = 0;
 
 let audioQueueDuration = 0;
+let audioPlaying = false;
 
 let audioCorrections = 0;
 let audioDroppedPackets = 0;
+let audioDroppedMs = 0;
 
 let lastSyncCorrection = 0;
 
-let audioClockOffset = null;
-
-let audioMonitorEnabled = false;
-
-/* ========================================
-   音声フォールバック・診断互換
-======================================== */
+let pendingAudioPackets = [];
 
 let audioMonitoring = false;
+
 let audioInitialSettings = [];
 let audioCurrentSettings = [];
 
@@ -169,7 +147,6 @@ let senderHistory = {};
 let receiverHistory = {};
 
 let lastFrameAt = 0;
-
 let lastAudioPacketAt = 0;
 
 /* ========================================
@@ -186,11 +163,11 @@ const remoteContext = remoteCanvas.getContext(
 let videoQueue = [];
 
 let videoReceiverToken = 0;
-
 let videoRenderTimer = null;
 
-let latestVideoTimestamp = 0;
+let videoDecodeBusy = false;
 
+let latestVideoTimestamp = 0;
 let lastVideoDisplayedTimestamp = 0;
 
 let videoClockOffset = null;
@@ -243,7 +220,7 @@ function updateButtons() {
   $("audioShare").disabled = sending;
 
   const hasAudio =
-    localStream?.getAudioTracks().length > 0;
+    (localStream?.getAudioTracks().length || 0) > 0;
 
   if ($("audioMonitorButton")) {
     $("audioMonitorButton").disabled = !hasAudio;
@@ -355,8 +332,8 @@ function updateAudioDiagnostics() {
   const tracks =
     localStream?.getAudioTracks() || [];
 
-  audioCurrentSettings = tracks.map(track =>
-    track.getSettings()
+  audioCurrentSettings = tracks.map(
+    track => track.getSettings()
   );
 
   element.textContent =
@@ -423,9 +400,10 @@ function stopAudioMonitor() {
 
   audioMonitoring = false;
 
-  if ($("audioMonitorButton")) {
-    $("audioMonitorButton").textContent =
-      "🎧 取得音声を試聴";
+  const button = $("audioMonitorButton");
+
+  if (button) {
+    button.textContent = "🎧 取得音声を試聴";
   }
 }
 
@@ -462,7 +440,7 @@ async function toggleAudioMonitor() {
 }
 
 /* ========================================
-   WebSocket接続
+   WebSocket
 ======================================== */
 
 function connect() {
@@ -484,7 +462,6 @@ function connect() {
   );
 
   socket.binaryType = "arraybuffer";
-
   ws = socket;
 
   socket.onopen = () => {
@@ -516,9 +493,7 @@ function connect() {
     stopSender(false);
     stopReceiver(false);
 
-    status(
-      "WebSocket切断。3秒後に再接続します"
-    );
+    status("WebSocket切断。3秒後に再接続します");
 
     clearTimeout(reconnectTimer);
 
@@ -581,11 +556,14 @@ function sendAudioBinary(
   writeTimestamp(view, 1, timestamp);
 
   view.setUint32(9, sampleRate, true);
-
   view.setUint8(13, channels);
 
   new Uint8Array(payload, 14).set(
-    new Uint8Array(samples.buffer)
+    new Uint8Array(
+      samples.buffer,
+      samples.byteOffset,
+      samples.byteLength
+    )
   );
 
   ws.send(payload);
@@ -624,11 +602,8 @@ async function applyCaptureSettings(settings) {
     const capabilities =
       track.getCapabilities?.();
 
-    const width =
-      capabilities?.width?.max;
-
-    const height =
-      capabilities?.height?.max;
+    const width = capabilities?.width?.max;
+    const height = capabilities?.height?.max;
 
     if (
       Number.isFinite(width) &&
@@ -723,18 +698,14 @@ async function startWorkerCapture() {
   if (!track) return false;
 
   try {
-    worker = new Worker(
-      "/websocket-worker.js"
-    );
+    worker = new Worker("/websocket-worker.js");
 
     workerReady = false;
     workerBusy = false;
 
     const ready = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(
-          new Error("Worker起動タイムアウト")
-        );
+        reject(new Error("Worker起動タイムアウト"));
       }, 3000);
 
       worker.onmessage = event => {
@@ -742,7 +713,6 @@ async function startWorkerCapture() {
 
         if (data.type === "ready") {
           clearTimeout(timeout);
-
           workerReady = true;
           resolve();
           return;
@@ -773,9 +743,7 @@ async function startWorkerCapture() {
             )
           ) {
             sentFrames++;
-
-            sentVideoBytes +=
-              data.buffer.byteLength;
+            sentVideoBytes += data.buffer.byteLength;
           }
 
           return;
@@ -789,10 +757,7 @@ async function startWorkerCapture() {
           skippedFrames++;
 
           if (data.type === "error") {
-            console.warn(
-              "Worker:",
-              data.message
-            );
+            console.warn("Worker:", data.message);
           }
         }
       };
@@ -808,11 +773,8 @@ async function startWorkerCapture() {
     worker.postMessage({
       type: "settings",
       settings: {
-        resolution:
-          appliedSettings.resolution,
-
-        jpegQuality:
-          appliedSettings.jpegQuality
+        resolution: appliedSettings.resolution,
+        jpegQuality: appliedSettings.jpegQuality
       }
     });
 
@@ -833,10 +795,7 @@ async function startWorkerCapture() {
     return true;
 
   } catch (error) {
-    console.warn(
-      "Worker利用不可:",
-      error
-    );
+    console.warn("Worker利用不可:", error);
 
     await stopWorkerCapture();
 
@@ -870,9 +829,7 @@ async function processVideoFrames() {
       }
 
       const now = performance.now();
-
-      const interval =
-        1000 / appliedSettings.fps;
+      const interval = 1000 / appliedSettings.fps;
 
       if (
         now - lastEncodeTime < interval ||
@@ -886,15 +843,7 @@ async function processVideoFrames() {
       }
 
       lastEncodeTime = now;
-
       workerBusy = true;
-
-      /*
-        VideoFrameが取得された時点の時刻を
-        JPEGフレームに対応付ける。
-
-        Workerは同時に1フレームだけ処理する。
-      */
 
       workerFrameTimestamp = Date.now();
 
@@ -910,29 +859,19 @@ async function processVideoFrames() {
 
         frame.close();
 
-        console.warn(
-          "VideoFrame:",
-          error
-        );
+        console.warn("VideoFrame:", error);
       }
     }
 
   } catch (error) {
     if (processorRunning) {
-      console.warn(
-        "Processor:",
-        error
-      );
+      console.warn("Processor:", error);
 
       await stopWorkerCapture();
 
-      if (
-        role === "sender" &&
-        localStream
-      ) {
+      if (role === "sender" && localStream) {
         try {
           await startCanvasCapture();
-
           updateCaptureInfo();
 
         } catch (fallbackError) {
@@ -1045,6 +984,8 @@ async function captureCanvasFrame(token) {
       size.height
     );
 
+    const timestamp = Date.now();
+
     const blob = await new Promise(resolve => {
       captureCanvas.toBlob(
         resolve,
@@ -1053,10 +994,7 @@ async function captureCanvasFrame(token) {
       );
     });
 
-    if (
-      !blob ||
-      token !== captureToken
-    ) {
+    if (!blob || token !== captureToken) {
       return;
     }
 
@@ -1078,16 +1016,9 @@ async function captureCanvasFrame(token) {
       ws?.readyState === WebSocket.OPEN &&
       ws.bufferedAmount < MAX_BUFFER
     ) {
-      if (
-        sendVideoBinary(
-          buffer,
-          Date.now()
-        )
-      ) {
+      if (sendVideoBinary(buffer, timestamp)) {
         sentFrames++;
-
-        sentVideoBytes +=
-          buffer.byteLength;
+        sentVideoBytes += buffer.byteLength;
       }
 
     } else {
@@ -1095,11 +1026,7 @@ async function captureCanvasFrame(token) {
     }
 
   } catch (error) {
-    console.warn(
-      "Canvas:",
-      error
-    );
-
+    console.warn("Canvas:", error);
     skippedFrames++;
 
   } finally {
@@ -1110,23 +1037,18 @@ async function captureCanvasFrame(token) {
 async function startCanvasCapture() {
   workerMode = false;
 
-  captureCanvas =
-    document.createElement("canvas");
+  captureCanvas = document.createElement("canvas");
 
-  captureContext =
-    captureCanvas.getContext(
-      "2d",
-      { alpha: false }
-    );
+  captureContext = captureCanvas.getContext(
+    "2d",
+    { alpha: false }
+  );
 
   if (!captureContext) {
-    throw new Error(
-      "Canvas初期化失敗"
-    );
+    throw new Error("Canvas初期化失敗");
   }
 
-  captureVideo =
-    document.createElement("video");
+  captureVideo = document.createElement("video");
 
   captureVideo.autoplay = true;
   captureVideo.muted = true;
@@ -1138,12 +1060,9 @@ async function startCanvasCapture() {
   captureVideo.style.opacity = "0";
   captureVideo.style.pointerEvents = "none";
 
-  document.body.appendChild(
-    captureVideo
-  );
+  document.body.appendChild(captureVideo);
 
-  captureVideo.srcObject =
-    localStream;
+  captureVideo.srcObject = localStream;
 
   await captureVideo.play();
 
@@ -1169,8 +1088,7 @@ async function startVideoCapture() {
 
   senderHistory = {};
 
-  const success =
-    await startWorkerCapture();
+  const success = await startWorkerCapture();
 
   if (!success) {
     await startCanvasCapture();
@@ -1208,7 +1126,14 @@ function stopVideoCapture() {
 }
 
 /* ========================================
-   AudioWorkletプログラム
+   AudioWorklet v27.5
+
+   重要な修正:
+   - 再生中パケットを含めたバッファ管理
+   - 正確な残りサンプル数
+   - 補正後の再計算
+   - 連続補正防止
+   - サンプルレート変換
 ======================================== */
 
 const AUDIO_WORKLET_CODE = `
@@ -1221,7 +1146,8 @@ class CasterAudioProcessor extends AudioWorkletProcessor {
     const settings =
       options.processorOptions || {};
 
-    this.mode = settings.mode || "receiver";
+    this.mode =
+      settings.mode || "receiver";
 
     this.packetFrames = Math.max(
       128,
@@ -1234,35 +1160,53 @@ class CasterAudioProcessor extends AudioWorkletProcessor {
 
     this.captureOffset = 0;
 
+    /*
+      受信音声キュー
+
+      queueFrames:
+      待機中パケットと再生中パケットの
+      残りサンプル数の合計。
+    */
+
     this.queue = [];
-
     this.queueFrames = 0;
-
-    this.playing = false;
 
     this.currentPacket = null;
     this.packetOffset = 0;
 
-    this.lastTimestamp = 0;
-
-    this.reportCounter = 0;
-
+    this.playing = false;
     this.muted = false;
 
+    this.lastTimestamp = 0;
+
+    this.renderedFrames = 0;
+    this.reportCounter = 0;
+
     this.targetFrames = Math.round(
-      sampleRate * 0.22
+      sampleRate * ${AUDIO_TARGET_BUFFER_MS / 1000}
     );
 
     this.maxFrames = Math.round(
-      sampleRate * 1.5
+      sampleRate * ${AUDIO_MAX_BUFFER_MS / 1000}
     );
 
     this.recoveryFrames = Math.round(
-      sampleRate * 0.25
+      sampleRate * ${AUDIO_RECOVERY_BUFFER_MS / 1000}
+    );
+
+    this.cooldownFrames = Math.round(
+      sampleRate * ${AUDIO_CORRECTION_COOLDOWN_MS / 1000}
+    );
+
+    this.confirmFrames = Math.round(
+      sampleRate * ${AUDIO_OVERFLOW_CONFIRM_MS / 1000}
     );
 
     this.lastCorrectionFrame = -Infinity;
-    this.renderedFrames = 0;
+
+    this.overflowStartedFrame = -1;
+
+    this.corrections = 0;
 
     this.port.onmessage = event => {
       const data = event.data;
@@ -1276,26 +1220,116 @@ class CasterAudioProcessor extends AudioWorkletProcessor {
       }
 
       if (data.type === "reset") {
-        this.queue = [];
-        this.queueFrames = 0;
-        this.currentPacket = null;
-        this.packetOffset = 0;
-        this.playing = false;
-        this.lastTimestamp = 0;
+        this.reset();
       }
     };
   }
 
-  addPacket(data) {
-    if (this.mode !== "receiver") return;
+  reset() {
+    this.queue = [];
+    this.queueFrames = 0;
 
-    const samples = new Int16Array(
-      data.buffer
+    this.currentPacket = null;
+    this.packetOffset = 0;
+
+    this.playing = false;
+
+    this.lastTimestamp = 0;
+
+    this.overflowStartedFrame = -1;
+    this.lastCorrectionFrame = -Infinity;
+  }
+
+  /*
+    サンプルレート変換
+
+    送信側と受信側のAudioContextが
+    異なるサンプルレートでも再生できるよう
+    線形補間で変換する。
+  */
+
+  resample(samples, channels, sourceRate) {
+    if (sourceRate === sampleRate) {
+      return samples;
+    }
+
+    const sourceFrames =
+      Math.floor(samples.length / channels);
+
+    const outputFrames =
+      Math.max(
+        1,
+        Math.round(
+          sourceFrames * sampleRate / sourceRate
+        )
+      );
+
+    const output = new Int16Array(
+      outputFrames * channels
     );
+
+    for (let i = 0; i < outputFrames; i++) {
+      const position =
+        i * sourceRate / sampleRate;
+
+      const index = Math.min(
+        sourceFrames - 1,
+        Math.floor(position)
+      );
+
+      const next = Math.min(
+        sourceFrames - 1,
+        index + 1
+      );
+
+      const fraction =
+        position - index;
+
+      for (let channel = 0; channel < channels; channel++) {
+        const a =
+          samples[index * channels + channel];
+
+        const b =
+          samples[next * channels + channel];
+
+        output[i * channels + channel] =
+          Math.round(
+            a + (b - a) * fraction
+          );
+      }
+    }
+
+    return output;
+  }
+
+  addPacket(data) {
+    if (this.mode !== "receiver") {
+      return;
+    }
 
     const channels = Math.max(
       1,
       Math.min(2, data.channels || 2)
+    );
+
+    const sourceRate =
+      data.sampleRate || sampleRate;
+
+    if (
+      sourceRate < 8000 ||
+      sourceRate > 192000
+    ) {
+      return;
+    }
+
+    let samples = new Int16Array(
+      data.buffer
+    );
+
+    samples = this.resample(
+      samples,
+      channels,
+      sourceRate
     );
 
     const frames = Math.floor(
@@ -1308,65 +1342,232 @@ class CasterAudioProcessor extends AudioWorkletProcessor {
       samples,
       channels,
       frames,
-      timestamp: data.timestamp,
-      sampleRate: data.sampleRate || sampleRate
+      timestamp: data.timestamp
     };
 
     this.queue.push(packet);
-
     this.queueFrames += frames;
 
-    const bufferedMs =
-      this.queueFrames / sampleRate * 1000;
+    /*
+      ここでは補正しない。
 
-    const canCorrect =
-      this.renderedFrames -
-      this.lastCorrectionFrame >
-      sampleRate * 5;
-
-    if (
-      bufferedMs > 1500 &&
-      canCorrect
-    ) {
-      this.recover();
-    }
+      v27.4では受信イベント中に補正していたが、
+      今回は音声処理のprocess()側で
+      一定時間の超過を確認してから補正する。
+    */
   }
 
+  /*
+    再生中パケットを含む
+    正確なバッファ量を再計算。
+  */
+
+  recalculateQueueFrames() {
+    let total = 0;
+
+    if (this.currentPacket) {
+      total += Math.max(
+        0,
+        this.currentPacket.frames -
+        this.packetOffset
+      );
+    }
+
+    for (const packet of this.queue) {
+      total += packet.frames;
+    }
+
+    this.queueFrames = total;
+
+    return total;
+  }
+
+  /*
+    v27.5 安定補正
+
+    最新の音声を約350ms残して
+    古いデータを破棄する。
+
+    補正後は正確に残量を再計算。
+  */
+
   recover() {
-    const target = Math.round(
-      sampleRate * 0.25
-    );
+    const originalFrames =
+      this.recalculateQueueFrames();
+
+    if (
+      originalFrames <=
+      this.maxFrames
+    ) {
+      return;
+    }
+
+    const target =
+      this.recoveryFrames;
 
     let dropped = 0;
 
     /*
-      古い音声を破棄して、
-      新しい音声を約250ms残す。
+      再生中パケットを破棄する場合、
+      残りサンプルだけを減算。
     */
 
+    if (this.currentPacket) {
+      const remaining = Math.max(
+        0,
+        this.currentPacket.frames -
+        this.packetOffset
+      );
+
+      dropped += remaining;
+
+      this.currentPacket = null;
+      this.packetOffset = 0;
+    }
+
+    /*
+      古い待機パケットを破棄する。
+
+      最新側に必要な量を残す。
+    */
+
+    let remainingFrames =
+      originalFrames - dropped;
+
     while (
-      this.queueFrames > target &&
-      this.queue.length > 1
+      this.queue.length > 1 &&
+      remainingFrames -
+        this.queue[0].frames >= target
     ) {
       const packet = this.queue.shift();
 
-      this.queueFrames -= packet.frames;
-
+      remainingFrames -= packet.frames;
       dropped += packet.frames;
     }
 
-    this.currentPacket = null;
-    this.packetOffset = 0;
+    /*
+      残りの先頭パケットも必要なら
+      部分的にスキップする。
+    */
+
+    if (
+      this.queue.length &&
+      remainingFrames > target
+    ) {
+      const excess =
+        remainingFrames - target;
+
+      const packet = this.queue[0];
+
+      const skip = Math.min(
+        excess,
+        packet.frames - 1
+      );
+
+      if (skip > 0) {
+        packet.samples =
+          packet.samples.subarray(
+            skip * packet.channels
+          );
+
+        packet.timestamp +=
+          skip / sampleRate * 1000;
+
+        packet.frames -= skip;
+
+        dropped += skip;
+      }
+    }
+
+    const actualRemaining =
+      this.recalculateQueueFrames();
+
+    /*
+      補正後は不足していなければ
+      再生を継続する。
+    */
+
+    this.playing =
+      actualRemaining >=
+      this.targetFrames;
 
     this.lastCorrectionFrame =
       this.renderedFrames;
 
+    this.overflowStartedFrame = -1;
+
+    this.corrections++;
+
     this.port.postMessage({
       type: "correction",
+
       droppedMs:
-        dropped / sampleRate * 1000
+        dropped / sampleRate * 1000,
+
+      remainingMs:
+        actualRemaining / sampleRate * 1000,
+
+      timestamp:
+        this.queue.length
+          ? this.queue[0].timestamp
+          : this.lastTimestamp
     });
   }
+
+  /*
+    補正判定
+
+    1. 1600ms超過
+    2. 500ms以上継続
+    3. 前回補正から5秒以上
+  */
+
+  checkOverflow() {
+    if (
+      this.queueFrames <=
+      this.maxFrames
+    ) {
+      this.overflowStartedFrame = -1;
+      return;
+    }
+
+    if (
+      this.overflowStartedFrame < 0
+    ) {
+      this.overflowStartedFrame =
+        this.renderedFrames;
+
+      return;
+    }
+
+    const overflowDuration =
+      this.renderedFrames -
+      this.overflowStartedFrame;
+
+    if (
+      overflowDuration <
+      this.confirmFrames
+    ) {
+      return;
+    }
+
+    const sinceCorrection =
+      this.renderedFrames -
+      this.lastCorrectionFrame;
+
+    if (
+      sinceCorrection <
+      this.cooldownFrames
+    ) {
+      return;
+    }
+
+    this.recover();
+  }
+
+  /*
+    音声キャプチャ
+  */
 
   capture(inputs) {
     const input = inputs[0];
@@ -1400,7 +1601,7 @@ class CasterAudioProcessor extends AudioWorkletProcessor {
 
         for (
           let j = 0;
-          j < this.packetFrames * 2;
+          j < pcm.length;
           j++
         ) {
           const sample = Math.max(
@@ -1416,17 +1617,34 @@ class CasterAudioProcessor extends AudioWorkletProcessor {
             : Math.round(sample * 32767);
         }
 
+        /*
+          audioContextの時間軸で
+          キャプチャ時刻を通知。
+        */
+
         this.port.postMessage({
           type: "capture",
+
           buffer: pcm.buffer,
-          frames: this.packetFrames,
-          sampleRate
+
+          frames:
+            this.packetFrames,
+
+          sampleRate,
+
+          contextTime:
+            currentTime
+
         }, [pcm.buffer]);
 
         this.captureOffset = 0;
       }
     }
   }
+
+  /*
+    音声再生
+  */
 
   playback(outputs) {
     const output = outputs[0];
@@ -1444,13 +1662,23 @@ class CasterAudioProcessor extends AudioWorkletProcessor {
       right.fill(0);
     }
 
+    /*
+      まずバッファを検査。
+    */
+
+    this.recalculateQueueFrames();
+
+    this.checkOverflow();
+
     if (!this.playing) {
       if (
         this.queueFrames >=
         this.targetFrames
       ) {
         this.playing = true;
+
       } else {
+        this.reportPlayback();
         return;
       }
     }
@@ -1464,10 +1692,20 @@ class CasterAudioProcessor extends AudioWorkletProcessor {
         this.packetOffset = 0;
       }
 
-      const packet = this.currentPacket;
+      const packet =
+        this.currentPacket;
 
       if (!packet) {
+        /*
+          音声不足。
+
+          無音を出力して、
+          次の音声が250ms蓄積するまで待つ。
+        */
+
         this.playing = false;
+        this.queueFrames = 0;
+
         break;
       }
 
@@ -1478,9 +1716,10 @@ class CasterAudioProcessor extends AudioWorkletProcessor {
       const l =
         packet.samples[offset] / 32768;
 
-      const r = packet.channels > 1
-        ? packet.samples[offset + 1] / 32768
-        : l;
+      const r =
+        packet.channels > 1
+          ? packet.samples[offset + 1] / 32768
+          : l;
 
       if (!this.muted) {
         left[i] = l;
@@ -1493,7 +1732,7 @@ class CasterAudioProcessor extends AudioWorkletProcessor {
       this.lastTimestamp =
         packet.timestamp +
         this.packetOffset /
-        packet.sampleRate * 1000;
+        sampleRate * 1000;
 
       this.packetOffset++;
 
@@ -1508,24 +1747,46 @@ class CasterAudioProcessor extends AudioWorkletProcessor {
       }
     }
 
+    /*
+      浮動的な誤差が累積しないよう
+      定期的に残量を再計算。
+    */
+
+    this.recalculateQueueFrames();
+
+    this.reportPlayback();
+  }
+
+  /*
+    再生状態通知
+  */
+
+  reportPlayback() {
     this.reportCounter++;
 
-    if (
-      this.reportCounter >= 8
-    ) {
-      this.reportCounter = 0;
-
-      this.port.postMessage({
-        type: "playback",
-        timestamp: this.lastTimestamp,
-
-        bufferedMs:
-          this.queueFrames /
-          sampleRate * 1000,
-
-        playing: this.playing
-      });
+    if (this.reportCounter < 8) {
+      return;
     }
+
+    this.reportCounter = 0;
+
+    this.port.postMessage({
+      type: "playback",
+
+      timestamp:
+        this.lastTimestamp,
+
+      bufferedMs:
+        this.queueFrames /
+        sampleRate * 1000,
+
+      playing:
+        this.playing,
+
+      packets:
+        this.queue.length +
+        (this.currentPacket ? 1 : 0)
+    });
   }
 
   process(inputs, outputs) {
@@ -1534,6 +1795,10 @@ class CasterAudioProcessor extends AudioWorkletProcessor {
 
     if (this.mode === "sender") {
       this.capture(inputs);
+
+      /*
+        送信側は無音出力。
+      */
 
       for (const output of outputs) {
         for (const channel of output) {
@@ -1561,18 +1826,13 @@ registerProcessor(
 ======================================== */
 
 async function createAudioContext(mode) {
-  if (
-    typeof AudioContext === "undefined" &&
-    typeof webkitAudioContext === "undefined"
-  ) {
-    throw new Error(
-      "AudioContext非対応"
-    );
-  }
-
   const Context =
     window.AudioContext ||
     window.webkitAudioContext;
+
+  if (!Context) {
+    throw new Error("AudioContext非対応");
+  }
 
   const context = new Context({
     latencyHint: "interactive"
@@ -1581,9 +1841,7 @@ async function createAudioContext(mode) {
   if (!context.audioWorklet) {
     await context.close();
 
-    throw new Error(
-      "AudioWorklet非対応"
-    );
+    throw new Error("AudioWorklet非対応");
   }
 
   const blob = new Blob(
@@ -1597,35 +1855,45 @@ async function createAudioContext(mode) {
     await context.audioWorklet.addModule(url);
 
   } catch (error) {
-    await context.close();
-
     URL.revokeObjectURL(url);
+
+    await context.close();
 
     throw error;
   }
 
-  const node = new AudioWorkletNode(
-    context,
-    "caster-audio-processor",
-    {
-      numberOfInputs:
-        mode === "sender" ? 1 : 0,
+  let node;
 
-      numberOfOutputs: 1,
+  try {
+    node = new AudioWorkletNode(
+      context,
+      "caster-audio-processor",
+      {
+        numberOfInputs:
+          mode === "sender" ? 1 : 0,
 
-      outputChannelCount: [2],
+        numberOfOutputs: 1,
 
-      processorOptions: {
-        mode
+        outputChannelCount: [2],
+
+        processorOptions: {
+          mode
+        }
       }
-    }
-  );
+    );
 
-  audioWorkletURL = url;
+  } catch (error) {
+    URL.revokeObjectURL(url);
+
+    await context.close();
+
+    throw error;
+  }
 
   return {
     context,
-    node
+    node,
+    url
   };
 }
 
@@ -1653,12 +1921,15 @@ async function startAudioCapture() {
       role !== "sender"
     ) {
       result.node.disconnect();
+      URL.revokeObjectURL(result.url);
+
       await result.context.close();
       return;
     }
 
     audioContext = result.context;
     audioNode = result.node;
+    audioWorkletURL = result.url;
 
     audioSampleRate =
       audioContext.sampleRate;
@@ -1675,13 +1946,6 @@ async function startAudioCapture() {
 
     audioSource.connect(audioNode);
 
-    /*
-      AudioWorkletを動作させるため、
-      無音出力を接続する。
-
-      送信音声をスピーカーへ流さない。
-    */
-
     audioNode.connect(
       audioContext.destination
     );
@@ -1690,7 +1954,16 @@ async function startAudioCapture() {
 
     audioSendSequence = 0;
 
-    audioCapturedAt = Date.now();
+    /*
+      音声タイムスタンプの基準。
+
+      AudioContextの時間軸をUnix時刻へ
+      近似的に対応付ける。
+    */
+
+    const clockBase =
+      Date.now() -
+      audioContext.currentTime * 1000;
 
     audioNode.port.onmessage = event => {
       const data = event.data;
@@ -1714,12 +1987,15 @@ async function startAudioCapture() {
         data.sampleRate * 1000;
 
       /*
-        チャンク末尾を受け取った時刻から
-        音声チャンク先頭の時刻を推定。
+        AudioWorkletの処理時刻を使うことで、
+        メインスレッドのメッセージ遅延が
+        タイムスタンプへ直接反映されるのを抑える。
       */
 
       const timestamp =
-        Date.now() - duration;
+        clockBase +
+        data.contextTime * 1000 -
+        duration;
 
       if (
         ws?.readyState !== WebSocket.OPEN ||
@@ -1751,10 +2027,7 @@ async function startAudioCapture() {
     updateCaptureInfo();
 
   } catch (error) {
-    console.warn(
-      "AudioWorklet送信:",
-      error
-    );
+    console.warn("AudioWorklet送信:", error);
 
     audioMode =
       `音声利用不可: ${error.message}`;
@@ -1773,6 +2046,7 @@ function stopAudioCapture() {
   audioGeneration++;
 
   audioReady = false;
+  audioStarting = false;
 
   if (audioNode) {
     audioNode.port.onmessage = null;
@@ -1799,9 +2073,7 @@ function stopAudioCapture() {
   }
 
   if (audioWorkletURL) {
-    URL.revokeObjectURL(
-      audioWorkletURL
-    );
+    URL.revokeObjectURL(audioWorkletURL);
 
     audioWorkletURL = null;
   }
@@ -1831,14 +2103,15 @@ async function initializeAudioReceiver() {
       role !== "receiver"
     ) {
       result.node.disconnect();
+      URL.revokeObjectURL(result.url);
 
       await result.context.close();
-
       return;
     }
 
     audioContext = result.context;
     audioNode = result.node;
+    audioWorkletURL = result.url;
 
     audioSampleRate =
       audioContext.sampleRate;
@@ -1847,11 +2120,9 @@ async function initializeAudioReceiver() {
       audioContext.destination
     );
 
-    const audio = $("remoteAudio");
-
     audioNode.port.postMessage({
       type: "mute",
-      value: audio.muted
+      value: $("remoteAudio").muted
     });
 
     audioNode.port.onmessage = event => {
@@ -1874,6 +2145,9 @@ async function initializeAudioReceiver() {
         audioQueueDuration =
           data.bufferedMs;
 
+        audioPlaying =
+          data.playing;
+
         if (data.playing) {
           $("audioStatus").textContent =
             "PCM音声再生中";
@@ -1884,19 +2158,28 @@ async function initializeAudioReceiver() {
         audioCorrections++;
 
         audioDroppedPackets++;
+        audioDroppedMs += data.droppedMs;
 
         lastSyncCorrection =
           performance.now();
 
         /*
-          音声が追いついたら、
-          古い映像フレームも削除する。
+          音声の補正位置に合わせて
+          古い映像フレームを破棄する。
         */
 
-        discardOldVideoFrames();
+        if (
+          Number.isFinite(data.timestamp)
+        ) {
+          videoQueue = videoQueue.filter(
+            frame =>
+              frame.timestamp >=
+              data.timestamp - 100
+          );
+        }
 
         $("audioStatus").textContent =
-          `音声同期補正: ${Math.round(data.droppedMs)}ms`;
+          `AV同期補正: ${Math.round(data.droppedMs)}ms`;
       }
     };
 
@@ -1909,25 +2192,24 @@ async function initializeAudioReceiver() {
     $("audioStatus").textContent =
       "PCM音声受信中";
 
+    flushPendingAudioPackets();
+
   } catch (error) {
-    console.warn(
-      "AudioWorklet受信:",
-      error
-    );
+    console.warn("AudioWorklet受信:", error);
 
     $("audioStatus").textContent =
       `音声再生エラー: ${error.message}`;
 
   } finally {
-    audioStarting = false;
+    if (generation === audioGeneration) {
+      audioStarting = false;
+    }
   }
 }
 
 /* ========================================
    音声受信
 ======================================== */
-
-let pendingAudioPackets = [];
 
 function receiveAudio(buffer) {
   if (role !== "receiver") return;
@@ -1939,11 +2221,7 @@ function receiveAudio(buffer) {
     return;
   }
 
-  receivedAudioBytes +=
-    buffer.byteLength;
-
-  const view =
-    new DataView(buffer);
+  const view = new DataView(buffer);
 
   const timestamp =
     readTimestamp(view, 0);
@@ -1973,37 +2251,26 @@ function receiveAudio(buffer) {
     return;
   }
 
+  receivedAudioBytes +=
+    samples.byteLength;
+
   audioReceiveSequence++;
 
   lastAudioPacketAt = Date.now();
 
-  /*
-    初回受信時刻から時計差を推定する。
-
-    送信側と受信側の時計差、および
-    ネットワーク遅延が混ざった概算値。
-  */
-
-  const offset =
-    Date.now() - timestamp;
-
-  if (
-    audioClockOffset === null ||
-    offset < audioClockOffset
-  ) {
-    audioClockOffset = offset;
-  }
+  const packet = {
+    buffer: samples,
+    timestamp,
+    sampleRate,
+    channels
+  };
 
   if (!audioReady) {
-    pendingAudioPackets.push({
-      buffer: samples,
-      timestamp,
-      sampleRate,
-      channels
-    });
+    pendingAudioPackets.push(packet);
 
     if (
-      pendingAudioPackets.length > 50
+      pendingAudioPackets.length >
+      AUDIO_PENDING_LIMIT
     ) {
       pendingAudioPackets.shift();
     }
@@ -2014,10 +2281,7 @@ function receiveAudio(buffer) {
 
   audioNode.port.postMessage({
     type: "packet",
-    buffer: samples,
-    timestamp,
-    sampleRate,
-    channels
+    ...packet
   }, [samples]);
 
   flushPendingAudioPackets();
@@ -2056,22 +2320,20 @@ function resetAudioReceiver() {
   audioPlaybackReportedAt = 0;
 
   audioQueueDuration = 0;
+  audioPlaying = false;
 
   audioCorrections = 0;
   audioDroppedPackets = 0;
+  audioDroppedMs = 0;
 
   lastSyncCorrection = 0;
-
-  audioClockOffset = null;
-
-  audioStarting = false;
 
   $("audioStatus").textContent =
     "音声待機中";
 }
 
 /* ========================================
-   映像受信
+   映像受信リセット
 ======================================== */
 
 function clearVideoReceiver() {
@@ -2093,7 +2355,6 @@ function clearVideoReceiver() {
 
   if (videoRenderTimer !== null) {
     clearInterval(videoRenderTimer);
-
     videoRenderTimer = null;
   }
 
@@ -2102,7 +2363,7 @@ function clearVideoReceiver() {
 }
 
 /* ========================================
-   JPEGフレーム受信
+   JPEG受信
 ======================================== */
 
 function receiveVideo(buffer) {
@@ -2115,8 +2376,7 @@ function receiveVideo(buffer) {
     return;
   }
 
-  const view =
-    new DataView(buffer);
+  const view = new DataView(buffer);
 
   const timestamp =
     readTimestamp(view, 0);
@@ -2131,8 +2391,7 @@ function receiveVideo(buffer) {
   receivedVideoBytes +=
     jpeg.byteLength;
 
-  latestVideoTimestamp =
-    timestamp;
+  latestVideoTimestamp = timestamp;
 
   const offset =
     Date.now() - timestamp;
@@ -2169,12 +2428,13 @@ function receiveVideo(buffer) {
 }
 
 /* ========================================
-   映像・音声同期
+   AV同期
 ======================================== */
 
 function getEstimatedAudioTimestamp() {
   if (
     !audioReady ||
+    !audioPlaying ||
     !audioPlaybackTimestamp
   ) {
     return null;
@@ -2185,11 +2445,18 @@ function getEstimatedAudioTimestamp() {
     audioPlaybackReportedAt;
 
   /*
-    AudioWorkletから最後に報告された
-    再生時刻を使う。
+    AudioWorkletの報告が古ければ
+    音声時刻を同期に使わない。
 
-    ただし推定時間は最大100ms。
+    古い時刻を使い続けると
+    映像が停止する原因になる。
   */
+
+  if (
+    elapsed > AUDIO_CLOCK_TIMEOUT_MS
+  ) {
+    return null;
+  }
 
   return (
     audioPlaybackTimestamp +
@@ -2200,24 +2467,9 @@ function getEstimatedAudioTimestamp() {
   );
 }
 
-function discardOldVideoFrames() {
-  const audioTime =
-    getEstimatedAudioTimestamp();
-
-  if (audioTime === null) {
-    return;
-  }
-
-  while (
-    videoQueue.length > 1 &&
-    videoQueue[1].timestamp <
-      audioTime - 100
-  ) {
-    videoQueue.shift();
-  }
-}
-
-let videoDecodeBusy = false;
+/* ========================================
+   映像描画
+======================================== */
 
 async function renderSynchronizedVideo() {
   if (
@@ -2233,46 +2485,54 @@ async function renderSynchronizedVideo() {
   const audioTime =
     getEstimatedAudioTimestamp();
 
-  /*
-    音声がある場合は、
-    音声の再生時刻に近い映像を選ぶ。
-
-    音声がない場合は最新フレームを表示。
-  */
-
   if (audioTime !== null) {
+    /*
+      音声時刻に近い最新フレームを選択。
+    */
+
     while (
       videoQueue.length &&
       videoQueue[0].timestamp <=
         audioTime + 30
     ) {
-      selected =
-        videoQueue.shift();
+      selected = videoQueue.shift();
     }
 
     /*
-      音声が長時間止まった場合は
-      映像も永久には停止させない。
+      同期対象が長時間来ない場合、
+      映像を永久には停止させない。
     */
 
     if (
       !selected &&
-      videoQueue.length &&
-      Date.now() -
-        videoQueue[0].timestamp >
-        VIDEO_MAX_WAIT_MS +
-        (videoClockOffset || 0)
+      videoQueue.length
     ) {
-      selected =
-        videoQueue.pop();
+      const oldest =
+        videoQueue[0];
 
-      videoQueue = [];
+      const estimatedAge =
+        Date.now() -
+        oldest.timestamp -
+        (videoClockOffset || 0);
+
+      if (
+        estimatedAge >
+        VIDEO_MAX_WAIT_MS
+      ) {
+        selected = videoQueue.pop();
+
+        videoQueue = [];
+      }
     }
 
   } else {
-    selected =
-      videoQueue.pop();
+    /*
+      音声がない、または音声時刻が古い場合。
 
+      最新映像を表示する。
+    */
+
+    selected = videoQueue.pop();
     videoQueue = [];
   }
 
@@ -2280,8 +2540,7 @@ async function renderSynchronizedVideo() {
 
   videoDecodeBusy = true;
 
-  const token =
-    videoReceiverToken;
+  const token = videoReceiverToken;
 
   try {
     const blob = new Blob(
@@ -2323,17 +2582,13 @@ async function renderSynchronizedVideo() {
     bitmap.close();
 
     receivedFrames++;
-
     lastFrameAt = Date.now();
 
     lastVideoDisplayedTimestamp =
       selected.timestamp;
 
   } catch (error) {
-    console.warn(
-      "JPEG decode:",
-      error
-    );
+    console.warn("JPEG decode:", error);
 
   } finally {
     videoDecodeBusy = false;
@@ -2352,14 +2607,11 @@ function handleBinary(buffer) {
     return;
   }
 
-  const view =
-    new DataView(buffer);
+  const view = new DataView(buffer);
 
-  const kind =
-    view.getUint8(0);
+  const kind = view.getUint8(0);
 
-  const payload =
-    buffer.slice(1);
+  const payload = buffer.slice(1);
 
   if (kind === FRAME_VIDEO) {
     receiveVideo(payload);
@@ -2377,37 +2629,27 @@ function handleBinary(buffer) {
 async function startSender() {
   if (role || senderStarting) return;
 
-  if (
-    ws?.readyState !== WebSocket.OPEN
-  ) {
-    status(
-      "WebSocketに接続されていません"
-    );
+  if (ws?.readyState !== WebSocket.OPEN) {
+    status("WebSocketに接続されていません");
     return;
   }
 
-  const room =
-    $("roomId").value;
+  const room = $("roomId").value;
 
   if (!room.trim()) {
-    status(
-      "ルームIDを入力してください"
-    );
+    status("ルームIDを入力してください");
     return;
   }
 
   senderStarting = true;
-
   updateButtons();
 
-  const settings =
-    readSettings();
+  const settings = readSettings();
 
   try {
     localStream =
       await navigator.mediaDevices.getDisplayMedia({
-        video:
-          initialConstraints(settings),
+        video: initialConstraints(settings),
 
         audio: settings.audio
           ? {
@@ -2422,9 +2664,7 @@ async function startSender() {
       localStream.getVideoTracks()[0];
 
     if (!track) {
-      throw new Error(
-        "映像トラックなし"
-      );
+      throw new Error("映像トラックなし");
     }
 
     audioInitialSettings =
@@ -2434,30 +2674,21 @@ async function startSender() {
 
     role = "sender";
     currentRoom = room;
-
     appliedSettings = settings;
 
-    track.onended = () =>
-      stopSender(true);
+    track.onended = () => stopSender(true);
 
-    await applyCaptureSettings(
-      settings
-    );
+    await applyCaptureSettings(settings);
 
     updatePreview();
-
     updateAudioDiagnostics();
 
     signal({
       type: "join",
       role: "sender",
       room,
-
-      name:
-        $("senderName").value,
-
-      memo:
-        $("roomMemo").value
+      name: $("senderName").value,
+      memo: $("roomMemo").value
     });
 
     await startVideoCapture();
@@ -2474,9 +2705,7 @@ async function startSender() {
 
     status(
       `WebSocket配信開始: ${room}\n` +
-      `映像処理: ${
-        workerMode ? "Worker" : "Canvas"
-      }\n` +
+      `映像処理: ${workerMode ? "Worker" : "Canvas"}\n` +
       `音声: ${audioMode}`
     );
 
@@ -2485,10 +2714,7 @@ async function startSender() {
     stopAudioCapture();
 
     if (localStream) {
-      for (
-        const track of
-        localStream.getTracks()
-      ) {
+      for (const track of localStream.getTracks()) {
         track.stop();
       }
     }
@@ -2497,12 +2723,9 @@ async function startSender() {
 
     role = null;
     currentRoom = null;
-
     appliedSettings = null;
 
-    status(
-      `画面共有エラー: ${error.message}`
-    );
+    status(`画面共有エラー: ${error.message}`);
 
     updateCaptureInfo();
     updateAudioDiagnostics();
@@ -2526,10 +2749,7 @@ function stopSender(sendLeave = true) {
   stopAudioCapture();
 
   if (localStream) {
-    for (
-      const track of
-      localStream.getTracks()
-    ) {
+    for (const track of localStream.getTracks()) {
       track.onended = null;
       track.stop();
     }
@@ -2540,16 +2760,13 @@ function stopSender(sendLeave = true) {
 
   $("localVideo").srcObject = null;
 
-  $("senderStats").textContent =
-    "未配信";
+  $("senderStats").textContent = "未配信";
 
   role = null;
   currentRoom = null;
 
   if (sendLeave) {
-    signal({
-      type: "leave"
-    });
+    signal({ type: "leave" });
   }
 
   updateCaptureInfo();
@@ -2558,9 +2775,7 @@ function stopSender(sendLeave = true) {
   updateButtons();
   renderRooms();
 
-  status(
-    "配信を停止しました"
-  );
+  status("配信を停止しました");
 }
 
 /* ========================================
@@ -2577,12 +2792,10 @@ async function applySettings() {
   }
 
   settingsApplying = true;
-
   updateButtons();
 
   try {
-    appliedSettings =
-      readSettings();
+    appliedSettings = readSettings();
 
     await applyCaptureSettings(
       appliedSettings
@@ -2607,14 +2820,10 @@ async function applySettings() {
     updatePreview();
     updateCaptureInfo();
 
-    status(
-      "設定を適用しました"
-    );
+    status("設定を適用しました");
 
   } catch (error) {
-    status(
-      `設定変更エラー: ${error.message}`
-    );
+    status(`設定変更エラー: ${error.message}`);
 
   } finally {
     settingsApplying = false;
@@ -2630,28 +2839,17 @@ function startReceiver(
   room = $("roomId").value
 ) {
   if (!room.trim()) {
-    status(
-      "ルームIDを入力してください"
-    );
+    status("ルームIDを入力してください");
     return;
   }
 
-  if (
-    ws?.readyState !== WebSocket.OPEN
-  ) {
-    status(
-      "WebSocketに接続されていません"
-    );
+  if (ws?.readyState !== WebSocket.OPEN) {
+    status("WebSocketに接続されていません");
     return;
   }
 
-  if (
-    role === "sender" ||
-    senderStarting
-  ) {
-    status(
-      "配信中は受信できません"
-    );
+  if (role === "sender" || senderStarting) {
+    status("配信中は受信できません");
     return;
   }
 
@@ -2666,7 +2864,6 @@ function startReceiver(
   currentRoom = room;
 
   $("roomId").value = room;
-
   $("roomId").dataset.edited = "1";
 
   signal({
@@ -2677,9 +2874,7 @@ function startReceiver(
 
   updateButtons();
 
-  status(
-    `受信待機中: ${room}`
-  );
+  status(`受信待機中: ${room}`);
 }
 
 /* ========================================
@@ -2696,19 +2891,14 @@ function stopReceiver(sendLeave = true) {
   currentRoom = null;
 
   if (sendLeave) {
-    signal({
-      type: "leave"
-    });
+    signal({ type: "leave" });
   }
 
-  $("receiverStats").textContent =
-    "未接続";
+  $("receiverStats").textContent = "未接続";
 
   updateButtons();
 
-  status(
-    "受信を停止しました"
-  );
+  status("受信を停止しました");
 }
 
 /* ========================================
@@ -2726,8 +2916,7 @@ function handleMessage(data) {
       break;
 
     case "room-list":
-      activeRooms =
-        data.rooms || [];
+      activeRooms = data.rooms || [];
 
       renderRooms();
 
@@ -2745,17 +2934,13 @@ function handleMessage(data) {
         data.role === role &&
         data.room === currentRoom
       ) {
-        status(
-          `ルーム参加: ${data.room}`
-        );
+        status(`ルーム参加: ${data.room}`);
       }
       break;
 
     case "sender-ready":
       if (role === "receiver") {
-        status(
-          "WebSocket映像を受信中..."
-        );
+        status("WebSocket映像を受信中...");
       }
       break;
 
@@ -2767,23 +2952,16 @@ function handleMessage(data) {
         $("receiverStats").textContent =
           "配信終了";
 
-        status(
-          "配信が終了しました"
-        );
+        status("配信が終了しました");
       }
       break;
 
     case "error":
-      status(
-        `エラー: ${data.message}`
-      );
+      status(`エラー: ${data.message}`);
 
       if (role === "sender") {
         stopSender(true);
-
-        status(
-          `エラー: ${data.message}`
-        );
+        status(`エラー: ${data.message}`);
       }
       break;
   }
@@ -2794,25 +2972,22 @@ function handleMessage(data) {
 ======================================== */
 
 function renderRooms() {
-  const container =
-    $("roomList");
+  const container = $("roomList");
 
   container.replaceChildren();
 
-  const visible =
-    activeRooms.filter(room =>
-      !(
-        role === "sender" &&
-        room.id === currentRoom
-      )
-    );
+  const visible = activeRooms.filter(room =>
+    !(
+      role === "sender" &&
+      room.id === currentRoom
+    )
+  );
 
   $("roomCount").textContent =
     `現在 ${visible.length} 件の配信があります`;
 
   if (!visible.length) {
-    const p =
-      document.createElement("p");
+    const p = document.createElement("p");
 
     p.className = "small";
 
@@ -2824,51 +2999,35 @@ function renderRooms() {
   }
 
   for (const room of visible) {
-    const card =
-      document.createElement("div");
-
+    const card = document.createElement("div");
     card.className = "room-card";
 
-    const title =
-      document.createElement("div");
-
+    const title = document.createElement("div");
     title.className = "room-title";
+    title.textContent = `🟢 ${room.id}`;
 
-    title.textContent =
-      `🟢 ${room.id}`;
-
-    const name =
-      document.createElement("div");
-
+    const name = document.createElement("div");
     name.className = "room-name";
-
-    name.textContent =
-      `配信者：${room.name}`;
+    name.textContent = `配信者：${room.name}`;
 
     card.append(title, name);
 
     if (room.memo) {
-      const memo =
-        document.createElement("div");
+      const memo = document.createElement("div");
 
       memo.className = "room-memo";
-
-      memo.textContent =
-        room.memo;
+      memo.textContent = room.memo;
 
       card.appendChild(memo);
     }
 
-    const button =
-      document.createElement("button");
+    const button = document.createElement("button");
 
     button.className = "room-watch";
-
     button.textContent = "📺 視聴";
 
     button.disabled =
-      role === "sender" ||
-      senderStarting;
+      role === "sender" || senderStarting;
 
     button.onclick = () => {
       startReceiver(room.id);
@@ -2880,7 +3039,6 @@ function renderRooms() {
     };
 
     card.appendChild(button);
-
     container.appendChild(card);
   }
 }
@@ -2894,12 +3052,8 @@ function updateMetadata() {
 
   signal({
     type: "update-room",
-
-    name:
-      $("senderName").value,
-
-    memo:
-      $("roomMemo").value
+    name: $("senderName").value,
+    memo: $("roomMemo").value
   });
 }
 
@@ -2908,11 +3062,8 @@ function updateMetadata() {
 ======================================== */
 
 function rate(history, key, count) {
-  const now =
-    performance.now();
-
-  const previous =
-    history[key];
+  const now = performance.now();
+  const previous = history[key];
 
   history[key] = {
     count,
@@ -2927,8 +3078,7 @@ function rate(history, key, count) {
   if (seconds <= 0) return "?";
 
   return (
-    (count - previous.count) /
-    seconds
+    (count - previous.count) / seconds
   ).toFixed(1);
 }
 
@@ -2955,21 +3105,15 @@ function updateStats() {
     const videoMbps =
       videoRate === "?"
         ? "?"
-        : (
-            Number(videoRate) *
-            8 / 1e6
-          ).toFixed(2);
+        : (Number(videoRate) * 8 / 1e6).toFixed(2);
 
     const audioMbps =
       audioRate === "?"
         ? "?"
-        : (
-            Number(audioRate) *
-            8 / 1e6
-          ).toFixed(2);
+        : (Number(audioRate) * 8 / 1e6).toFixed(2);
 
     $("senderStats").textContent =
-`========== WebSocket送信 v27.4 ==========
+`========== WebSocket送信 v27.5 ==========
 
 【映像】
 処理方式: ${workerMode ? "Worker" : "Canvas"}
@@ -3033,10 +3177,7 @@ ${ws?.bufferedAmount ?? "?"} bytes
     const videoMbps =
       videoRate === "?"
         ? "?"
-        : (
-            Number(videoRate) *
-            8 / 1e6
-          ).toFixed(2);
+        : (Number(videoRate) * 8 / 1e6).toFixed(2);
 
     const audioTime =
       getEstimatedAudioTimestamp();
@@ -3050,18 +3191,16 @@ ${ws?.bufferedAmount ?? "?"} bytes
           ).toFixed(0)
         : "?";
 
-    const audioDelay =
-      audioClockOffset !== null &&
-      audioTime !== null
+    const sinceCorrection =
+      lastSyncCorrection
         ? (
-            Date.now() -
-            audioTime -
-            audioClockOffset
-          ).toFixed(0)
-        : "?";
+            (performance.now() -
+            lastSyncCorrection) / 1000
+          ).toFixed(1)
+        : "なし";
 
     $("receiverStats").textContent =
-`========== WebSocket受信 v27.4 ==========
+`========== WebSocket受信 v27.5 ==========
 
 【映像】
 実測表示FPS:
@@ -3081,7 +3220,7 @@ ${videoQueue.length}
 ${audioMode}
 
 再生状態:
-${audioReady ? "AudioWorklet動作中" : "待機中"}
+${audioPlaying ? "再生中" : "バッファ待機中"}
 
 受信パケット:
 ${audioReceiveSequence}
@@ -3089,18 +3228,27 @@ ${audioReceiveSequence}
 音声バッファ:
 ${audioQueueDuration.toFixed(0)} ms
 
+【安定同期】
+補正開始閾値:
+${AUDIO_MAX_BUFFER_MS} ms
+
+補正後の目標:
+${AUDIO_RECOVERY_BUFFER_MS} ms
+
 自動補正回数:
 ${audioCorrections}
+
+破棄した音声:
+${audioDroppedMs.toFixed(0)} ms
+
+前回補正から:
+${sinceCorrection} 秒
 
 【AV同期】
 映像と音声の時刻差:
 ${syncDifference} ms
 
-音声の推定追加遅延:
-${audioDelay} ms
-
-※時刻差は送信側で取得した
-推定タイムスタンプに基づきます。
+※送信側の推定タイムスタンプに基づく値です。
 
 【通信】
 映像受信速度:
@@ -3124,12 +3272,9 @@ ${lastFrameAt
    イベント
 ======================================== */
 
-$("roomId").addEventListener(
-  "input",
-  () => {
-    $("roomId").dataset.edited = "1";
-  }
-);
+$("roomId").addEventListener("input", () => {
+  $("roomId").dataset.edited = "1";
+});
 
 $("senderName").addEventListener(
   "input",
@@ -3141,8 +3286,7 @@ $("roomMemo").addEventListener(
   updateMetadata
 );
 
-$("sendButton").onclick =
-  startSender;
+$("sendButton").onclick = startSender;
 
 $("stopButton").onclick =
   () => stopSender(true);
@@ -3153,11 +3297,9 @@ $("receiveButton").onclick =
 $("leaveButton").onclick =
   () => stopReceiver(true);
 
-$("applyButton").onclick =
-  applySettings;
+$("applyButton").onclick = applySettings;
 
-$("preview").onchange =
-  updatePreview;
+$("preview").onchange = updatePreview;
 
 if ($("audioMonitorButton")) {
   $("audioMonitorButton").onclick =
@@ -3190,10 +3332,7 @@ $("muteButton").onclick = () => {
       ? "🔇 ミュート中"
       : "🔊 音声ON";
 
-  if (
-    !audio.muted &&
-    audioContext
-  ) {
+  if (!audio.muted && audioContext) {
     audioContext.resume().catch(() => {});
   }
 };
@@ -3202,28 +3341,18 @@ $("muteButton").onclick = () => {
    初期化
 ======================================== */
 
-$("remoteVideo").classList.add(
-  "hidden"
-);
-
-$("remoteCanvas").classList.remove(
-  "hidden"
-);
+$("remoteVideo").classList.add("hidden");
+$("remoteCanvas").classList.remove("hidden");
 
 connect();
 
 updateButtons();
 updatePreview();
 
-setInterval(
-  updateStats,
-  1000
-);
+setInterval(updateStats, 1000);
 
 setInterval(() => {
-  signal({
-    type: "ping"
-  });
+  signal({ type: "ping" });
 }, 15000);
 
 })();
