@@ -4,61 +4,67 @@
 
 const $ = id => document.getElementById(id);
 
+/* ========================================
+   WebSocket Caster v27.4
+   AV Sync Experiment
+======================================== */
+
 const FRAME_VIDEO = 1;
 const FRAME_AUDIO = 2;
 
 const MAX_BUFFER = 1024 * 1024;
 
+/*
+  v27.4 バイナリ形式
+
+  映像:
+  [1byte 種別]
+  [8byte タイムスタンプ]
+  [JPEG]
+
+  音声:
+  [1byte 種別]
+  [8byte タイムスタンプ]
+  [4byte サンプルレート]
+  [1byte チャンネル数]
+  [PCM Int16]
+
+  タイムスタンプはUnix時刻ミリ秒。
+  音声の時刻はチャンク先頭サンプルの推定時刻。
+*/
+
+const VIDEO_HEADER_SIZE = 8;
+const AUDIO_HEADER_SIZE = 13;
+
 /* ========================================
-   v27.3 音声同期設定
+   同期設定
 ======================================== */
 
-const AUDIO_TIMESLICE = 100;
+const AUDIO_PACKET_MS = 20;
 
-// バッファ先端との差がこの値を超えたら補正
-const AUDIO_MAX_LATENCY = 0.5;
+// 通常再生で確保する音声バッファ
+const AUDIO_TARGET_BUFFER_MS = 220;
 
-// 補正後に残すバッファ
-const AUDIO_TARGET_LATENCY = 0.18;
+// 音声がこれ以上蓄積した場合に補正
+const AUDIO_MAX_BUFFER_MS = 1500;
 
-// 初回再生時の目標バッファ
-const AUDIO_START_LATENCY = 0.18;
+// 補正直後に残す音声
+const AUDIO_RECOVERY_BUFFER_MS = 250;
 
-// 連続補正防止
-const AUDIO_CORRECTION_INTERVAL = 1000;
+// 大きな補正の最短間隔
+const SYNC_COOLDOWN_MS = 5000;
 
-// 再生開始直後の猶予
-const AUDIO_START_GRACE = 300;
+// 映像フレーム保持数
+const VIDEO_QUEUE_LIMIT = 120;
 
-// 古い音声データの保持時間
-const AUDIO_KEEP_BEHIND = 5;
+// 映像フレームを待つ最大時間
+const VIDEO_MAX_WAIT_MS = 1500;
 
-// 受信待ちキュー上限
-const AUDIO_QUEUE_LIMIT = 2 * 1024 * 1024;
-
-// 古いバッファを削除する間隔
-const AUDIO_CLEANUP_INTERVAL = 3000;
-
-let audioLatency = 0;
-let audioCorrections = 0;
-
-let audioLastCorrection = 0;
-let audioLastCleanup = 0;
-
-let audioChunksSent = 0;
-let audioChunksReceived = 0;
-
-let audioLastReceiveTime = 0;
-
-let audioSyncTimer = null;
-
-let audioStartPending = false;
-let audioStartTime = 0;
-
-let audioCleanupRunning = false;
+// タイムスタンプ補正の上限
+const MAX_CLOCK_OFFSET_MS = 10000;
 
 /* ========================================
-   WebSocket
+   基本状態
 ======================================== */
 
 let ws = null;
@@ -98,27 +104,53 @@ let captureBusy = false;
 let captureToken = 0;
 let lastEncodeTime = 0;
 
+let workerFrameTimestamp = 0;
+
 /* ========================================
-   音声
+   AudioWorklet
 ======================================== */
 
-let audioRecorder = null;
-let audioMime = "";
+let audioContext = null;
+let audioSource = null;
+let audioNode = null;
+
+let audioWorkletURL = null;
+
+let audioMode = "なし";
+let audioSampleRate = 48000;
+let audioChannels = 2;
+
+let audioSendSequence = 0;
+let audioReceiveSequence = 0;
+
+let audioCapturedAt = 0;
+
+let audioGeneration = 0;
+
+let audioReady = false;
+let audioStarting = false;
+
+let audioPlaybackTimestamp = 0;
+let audioPlaybackReportedAt = 0;
+
+let audioQueueDuration = 0;
+
+let audioCorrections = 0;
+let audioDroppedPackets = 0;
+
+let lastSyncCorrection = 0;
+
+let audioClockOffset = null;
+
+let audioMonitorEnabled = false;
+
+/* ========================================
+   音声フォールバック・診断互換
+======================================== */
 
 let audioMonitoring = false;
-
 let audioInitialSettings = [];
 let audioCurrentSettings = [];
-
-let mediaSource = null;
-let sourceBuffer = null;
-let audioQueue = [];
-
-let audioObjectURL = null;
-let audioGeneration = 0;
-let audioStarted = false;
-
-let pendingAudioBytes = 0;
 
 /* ========================================
    統計
@@ -138,13 +170,11 @@ let receiverHistory = {};
 
 let lastFrameAt = 0;
 
+let lastAudioPacketAt = 0;
+
 /* ========================================
    映像受信
 ======================================== */
-
-let pendingBlob = null;
-let decoding = false;
-let receiverToken = 0;
 
 const remoteCanvas = $("remoteCanvas");
 
@@ -152,6 +182,18 @@ const remoteContext = remoteCanvas.getContext(
   "2d",
   { alpha: false }
 );
+
+let videoQueue = [];
+
+let videoReceiverToken = 0;
+
+let videoRenderTimer = null;
+
+let latestVideoTimestamp = 0;
+
+let lastVideoDisplayedTimestamp = 0;
+
+let videoClockOffset = null;
 
 /* ========================================
    共通
@@ -168,6 +210,14 @@ function signal(data) {
 
   ws.send(JSON.stringify(data));
   return true;
+}
+
+function writeTimestamp(view, offset, timestamp) {
+  view.setFloat64(offset, timestamp, true);
+}
+
+function readTimestamp(view, offset) {
+  return view.getFloat64(offset, true);
 }
 
 function updateButtons() {
@@ -229,14 +279,21 @@ function targetSize(settings) {
 
 function initialConstraints(settings) {
   const video = {
-    frameRate: { ideal: settings.fps }
+    frameRate: {
+      ideal: settings.fps
+    }
   };
 
   const size = targetSize(settings);
 
   if (size) {
-    video.width = { ideal: size.width };
-    video.height = { ideal: size.height };
+    video.width = {
+      ideal: size.width
+    };
+
+    video.height = {
+      ideal: size.height
+    };
   }
 
   return video;
@@ -290,64 +347,44 @@ function outputSize() {
    音声診断互換
 ======================================== */
 
-function audioSettingsText(settings) {
-  if (!settings) return "取得できません";
-
-  const value = key =>
-    settings[key] === undefined
-      ? "情報なし"
-      : String(settings[key]);
-
-  return [
-    `エコーキャンセル: ${value("echoCancellation")}`,
-    `ノイズ抑制: ${value("noiseSuppression")}`,
-    `自動音量調整: ${value("autoGainControl")}`,
-    `チャンネル数: ${value("channelCount")}`,
-    `サンプルレート: ${value("sampleRate")}`
-  ].join("\n");
-}
-
 function updateAudioDiagnostics() {
   const element = $("audioDiagnostics");
 
   if (!element) return;
 
-  const tracks = localStream?.getAudioTracks() || [];
+  const tracks =
+    localStream?.getAudioTracks() || [];
 
-  if (!tracks.length) {
-    element.textContent = "音声トラックなし";
-    updateButtons();
-    return;
-  }
-
-  audioCurrentSettings =
-    tracks.map(track => track.getSettings());
+  audioCurrentSettings = tracks.map(track =>
+    track.getSettings()
+  );
 
   element.textContent =
-`========== WebSocket音声診断 ==========
+`========== WebSocket音声 ==========
 
-取得トラック数: ${tracks.length}
+方式:
+${audioMode}
 
-【取得直後】
-${audioInitialSettings.map(audioSettingsText).join("\n\n")}
+取得トラック数:
+${tracks.length}
 
-【現在】
-${audioCurrentSettings.map(audioSettingsText).join("\n\n")}
+サンプルレート:
+${audioSampleRate}
 
-音声コーデック:
-${audioMime || "未開始"}
+チャンネル数:
+${audioChannels}
 
-試聴:
-${audioMonitoring ? "ON" : "OFF"}`;
-
-  updateButtons();
+音声処理:
+可能な範囲でOFF`;
 }
 
 async function disableAudioProcessing() {
   if (!localStream) return;
 
   for (const track of localStream.getAudioTracks()) {
-    const capabilities = track.getCapabilities?.() || {};
+    const capabilities =
+      track.getCapabilities?.() || {};
+
     const constraints = {};
 
     for (const key of [
@@ -386,21 +423,20 @@ function stopAudioMonitor() {
 
   audioMonitoring = false;
 
-  const button = $("audioMonitorButton");
-
-  if (button) {
-    button.textContent = "🎧 取得音声を試聴";
+  if ($("audioMonitorButton")) {
+    $("audioMonitorButton").textContent =
+      "🎧 取得音声を試聴";
   }
 }
 
 async function toggleAudioMonitor() {
   if (audioMonitoring) {
     stopAudioMonitor();
-    updateAudioDiagnostics();
     return;
   }
 
-  const tracks = localStream?.getAudioTracks() || [];
+  const tracks =
+    localStream?.getAudioTracks() || [];
 
   if (!tracks.length) return;
 
@@ -423,12 +459,10 @@ async function toggleAudioMonitor() {
   } catch (error) {
     status(`試聴エラー: ${error.message}`);
   }
-
-  updateAudioDiagnostics();
 }
 
 /* ========================================
-   WebSocket
+   WebSocket接続
 ======================================== */
 
 function connect() {
@@ -450,6 +484,7 @@ function connect() {
   );
 
   socket.binaryType = "arraybuffer";
+
   ws = socket;
 
   socket.onopen = () => {
@@ -481,7 +516,9 @@ function connect() {
     stopSender(false);
     stopReceiver(false);
 
-    status("WebSocket切断。3秒後に再接続します");
+    status(
+      "WebSocket切断。3秒後に再接続します"
+    );
 
     clearTimeout(reconnectTimer);
 
@@ -495,17 +532,61 @@ function connect() {
   };
 }
 
-function sendBinary(kind, buffer) {
+/* ========================================
+   バイナリ送信
+======================================== */
+
+function sendVideoBinary(buffer, timestamp) {
   if (ws?.readyState !== WebSocket.OPEN) {
     return false;
   }
 
-  const payload = new Uint8Array(
-    buffer.byteLength + 1
+  const payload = new ArrayBuffer(
+    1 + VIDEO_HEADER_SIZE + buffer.byteLength
   );
 
-  payload[0] = kind;
-  payload.set(new Uint8Array(buffer), 1);
+  const view = new DataView(payload);
+
+  view.setUint8(0, FRAME_VIDEO);
+
+  writeTimestamp(view, 1, timestamp);
+
+  new Uint8Array(payload, 9).set(
+    new Uint8Array(buffer)
+  );
+
+  ws.send(payload);
+
+  return true;
+}
+
+function sendAudioBinary(
+  samples,
+  timestamp,
+  sampleRate,
+  channels
+) {
+  if (ws?.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+
+  const payload = new ArrayBuffer(
+    1 + AUDIO_HEADER_SIZE + samples.byteLength
+  );
+
+  const view = new DataView(payload);
+
+  view.setUint8(0, FRAME_AUDIO);
+
+  writeTimestamp(view, 1, timestamp);
+
+  view.setUint32(9, sampleRate, true);
+
+  view.setUint8(13, channels);
+
+  new Uint8Array(payload, 14).set(
+    new Uint8Array(samples.buffer)
+  );
 
   ws.send(payload);
 
@@ -517,32 +598,49 @@ function sendBinary(kind, buffer) {
 ======================================== */
 
 async function applyCaptureSettings(settings) {
-  const track = localStream?.getVideoTracks()[0];
+  const track =
+    localStream?.getVideoTracks()[0];
 
   if (!track) return;
 
   const constraints = {
-    frameRate: { ideal: settings.fps }
+    frameRate: {
+      ideal: settings.fps
+    }
   };
 
   const size = targetSize(settings);
 
   if (size) {
-    constraints.width = { ideal: size.width };
-    constraints.height = { ideal: size.height };
+    constraints.width = {
+      ideal: size.width
+    };
+
+    constraints.height = {
+      ideal: size.height
+    };
 
   } else {
-    const capabilities = track.getCapabilities?.();
+    const capabilities =
+      track.getCapabilities?.();
 
-    const width = capabilities?.width?.max;
-    const height = capabilities?.height?.max;
+    const width =
+      capabilities?.width?.max;
+
+    const height =
+      capabilities?.height?.max;
 
     if (
       Number.isFinite(width) &&
       Number.isFinite(height)
     ) {
-      constraints.width = { ideal: width };
-      constraints.height = { ideal: height };
+      constraints.width = {
+        ideal: width
+      };
+
+      constraints.height = {
+        ideal: height
+      };
     }
   }
 
@@ -589,10 +687,11 @@ ${appliedSettings.jpegQuality}
 処理方式:
 ${workerMode ? "VideoFrame + Worker" : "Canvas互換モード"}
 
-音声トラック:
-${localStream.getAudioTracks().length}
+音声方式:
+${audioMode}
 
-※実際の送信FPSは統計で確認できます。`;
+音声トラック:
+${localStream.getAudioTracks().length}`;
 }
 
 function updatePreview() {
@@ -606,7 +705,7 @@ function updatePreview() {
 }
 
 /* ========================================
-   Worker
+   Worker映像送信
 ======================================== */
 
 async function startWorkerCapture() {
@@ -618,19 +717,24 @@ async function startWorkerCapture() {
     return false;
   }
 
-  const track = localStream?.getVideoTracks()[0];
+  const track =
+    localStream?.getVideoTracks()[0];
 
   if (!track) return false;
 
   try {
-    worker = new Worker("/websocket-worker.js");
+    worker = new Worker(
+      "/websocket-worker.js"
+    );
 
     workerReady = false;
     workerBusy = false;
 
     const ready = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error("Worker起動タイムアウト"));
+        reject(
+          new Error("Worker起動タイムアウト")
+        );
       }, 3000);
 
       worker.onmessage = event => {
@@ -638,6 +742,7 @@ async function startWorkerCapture() {
 
         if (data.type === "ready") {
           clearTimeout(timeout);
+
           workerReady = true;
           resolve();
           return;
@@ -661,9 +766,16 @@ async function startWorkerCapture() {
             return;
           }
 
-          if (sendBinary(FRAME_VIDEO, data.buffer)) {
+          if (
+            sendVideoBinary(
+              data.buffer,
+              workerFrameTimestamp
+            )
+          ) {
             sentFrames++;
-            sentVideoBytes += data.buffer.byteLength;
+
+            sentVideoBytes +=
+              data.buffer.byteLength;
           }
 
           return;
@@ -677,7 +789,10 @@ async function startWorkerCapture() {
           skippedFrames++;
 
           if (data.type === "error") {
-            console.warn("Worker:", data.message);
+            console.warn(
+              "Worker:",
+              data.message
+            );
           }
         }
       };
@@ -693,13 +808,20 @@ async function startWorkerCapture() {
     worker.postMessage({
       type: "settings",
       settings: {
-        resolution: appliedSettings.resolution,
-        jpegQuality: appliedSettings.jpegQuality
+        resolution:
+          appliedSettings.resolution,
+
+        jpegQuality:
+          appliedSettings.jpegQuality
       }
     });
 
-    processor = new MediaStreamTrackProcessor({ track });
-    processorReader = processor.readable.getReader();
+    processor = new MediaStreamTrackProcessor({
+      track
+    });
+
+    processorReader =
+      processor.readable.getReader();
 
     processorRunning = true;
     workerMode = true;
@@ -711,7 +833,10 @@ async function startWorkerCapture() {
     return true;
 
   } catch (error) {
-    console.warn("Worker利用不可:", error);
+    console.warn(
+      "Worker利用不可:",
+      error
+    );
 
     await stopWorkerCapture();
 
@@ -745,7 +870,9 @@ async function processVideoFrames() {
       }
 
       const now = performance.now();
-      const interval = 1000 / appliedSettings.fps;
+
+      const interval =
+        1000 / appliedSettings.fps;
 
       if (
         now - lastEncodeTime < interval ||
@@ -759,7 +886,17 @@ async function processVideoFrames() {
       }
 
       lastEncodeTime = now;
+
       workerBusy = true;
+
+      /*
+        VideoFrameが取得された時点の時刻を
+        JPEGフレームに対応付ける。
+
+        Workerは同時に1フレームだけ処理する。
+      */
+
+      workerFrameTimestamp = Date.now();
 
       try {
         worker.postMessage({
@@ -773,19 +910,29 @@ async function processVideoFrames() {
 
         frame.close();
 
-        console.warn("VideoFrame:", error);
+        console.warn(
+          "VideoFrame:",
+          error
+        );
       }
     }
 
   } catch (error) {
     if (processorRunning) {
-      console.warn("Processor:", error);
+      console.warn(
+        "Processor:",
+        error
+      );
 
       await stopWorkerCapture();
 
-      if (role === "sender" && localStream) {
+      if (
+        role === "sender" &&
+        localStream
+      ) {
         try {
           await startCanvasCapture();
+
           updateCaptureInfo();
 
         } catch (fallbackError) {
@@ -906,7 +1053,12 @@ async function captureCanvasFrame(token) {
       );
     });
 
-    if (!blob || token !== captureToken) return;
+    if (
+      !blob ||
+      token !== captureToken
+    ) {
+      return;
+    }
 
     if (blob.size > 1024 * 1024) {
       skippedFrames++;
@@ -926,9 +1078,16 @@ async function captureCanvasFrame(token) {
       ws?.readyState === WebSocket.OPEN &&
       ws.bufferedAmount < MAX_BUFFER
     ) {
-      if (sendBinary(FRAME_VIDEO, buffer)) {
+      if (
+        sendVideoBinary(
+          buffer,
+          Date.now()
+        )
+      ) {
         sentFrames++;
-        sentVideoBytes += buffer.byteLength;
+
+        sentVideoBytes +=
+          buffer.byteLength;
       }
 
     } else {
@@ -936,7 +1095,11 @@ async function captureCanvasFrame(token) {
     }
 
   } catch (error) {
-    console.warn("Canvas:", error);
+    console.warn(
+      "Canvas:",
+      error
+    );
+
     skippedFrames++;
 
   } finally {
@@ -947,18 +1110,23 @@ async function captureCanvasFrame(token) {
 async function startCanvasCapture() {
   workerMode = false;
 
-  captureCanvas = document.createElement("canvas");
+  captureCanvas =
+    document.createElement("canvas");
 
-  captureContext = captureCanvas.getContext(
-    "2d",
-    { alpha: false }
-  );
+  captureContext =
+    captureCanvas.getContext(
+      "2d",
+      { alpha: false }
+    );
 
   if (!captureContext) {
-    throw new Error("Canvas初期化失敗");
+    throw new Error(
+      "Canvas初期化失敗"
+    );
   }
 
-  captureVideo = document.createElement("video");
+  captureVideo =
+    document.createElement("video");
 
   captureVideo.autoplay = true;
   captureVideo.muted = true;
@@ -970,9 +1138,12 @@ async function startCanvasCapture() {
   captureVideo.style.opacity = "0";
   captureVideo.style.pointerEvents = "none";
 
-  document.body.appendChild(captureVideo);
+  document.body.appendChild(
+    captureVideo
+  );
 
-  captureVideo.srcObject = localStream;
+  captureVideo.srcObject =
+    localStream;
 
   await captureVideo.play();
 
@@ -998,7 +1169,8 @@ async function startVideoCapture() {
 
   senderHistory = {};
 
-  const success = await startWorkerCapture();
+  const success =
+    await startWorkerCapture();
 
   if (!success) {
     await startCanvasCapture();
@@ -1036,157 +1208,834 @@ function stopVideoCapture() {
 }
 
 /* ========================================
-   音声送信 v27.3
+   AudioWorkletプログラム
 ======================================== */
 
-function startAudioCapture() {
-  const tracks = localStream?.getAudioTracks() || [];
+const AUDIO_WORKLET_CODE = `
 
-  if (!tracks.length) {
-    console.warn("音声トラックなし");
-    return;
+class CasterAudioProcessor extends AudioWorkletProcessor {
+
+  constructor(options) {
+    super();
+
+    const settings =
+      options.processorOptions || {};
+
+    this.mode = settings.mode || "receiver";
+
+    this.packetFrames = Math.max(
+      128,
+      Math.round(sampleRate * 0.02)
+    );
+
+    this.captureBuffer = new Float32Array(
+      this.packetFrames * 2
+    );
+
+    this.captureOffset = 0;
+
+    this.queue = [];
+
+    this.queueFrames = 0;
+
+    this.playing = false;
+
+    this.currentPacket = null;
+    this.packetOffset = 0;
+
+    this.lastTimestamp = 0;
+
+    this.reportCounter = 0;
+
+    this.muted = false;
+
+    this.targetFrames = Math.round(
+      sampleRate * 0.22
+    );
+
+    this.maxFrames = Math.round(
+      sampleRate * 1.5
+    );
+
+    this.recoveryFrames = Math.round(
+      sampleRate * 0.25
+    );
+
+    this.lastCorrectionFrame = -Infinity;
+    this.renderedFrames = 0;
+
+    this.port.onmessage = event => {
+      const data = event.data;
+
+      if (data.type === "packet") {
+        this.addPacket(data);
+      }
+
+      if (data.type === "mute") {
+        this.muted = !!data.value;
+      }
+
+      if (data.type === "reset") {
+        this.queue = [];
+        this.queueFrames = 0;
+        this.currentPacket = null;
+        this.packetOffset = 0;
+        this.playing = false;
+        this.lastTimestamp = 0;
+      }
+    };
   }
 
-  if (typeof MediaRecorder === "undefined") {
-    console.warn("MediaRecorder非対応");
-    return;
+  addPacket(data) {
+    if (this.mode !== "receiver") return;
+
+    const samples = new Int16Array(
+      data.buffer
+    );
+
+    const channels = Math.max(
+      1,
+      Math.min(2, data.channels || 2)
+    );
+
+    const frames = Math.floor(
+      samples.length / channels
+    );
+
+    if (!frames) return;
+
+    const packet = {
+      samples,
+      channels,
+      frames,
+      timestamp: data.timestamp,
+      sampleRate: data.sampleRate || sampleRate
+    };
+
+    this.queue.push(packet);
+
+    this.queueFrames += frames;
+
+    const bufferedMs =
+      this.queueFrames / sampleRate * 1000;
+
+    const canCorrect =
+      this.renderedFrames -
+      this.lastCorrectionFrame >
+      sampleRate * 5;
+
+    if (
+      bufferedMs > 1500 &&
+      canCorrect
+    ) {
+      this.recover();
+    }
   }
 
-  const mimeTypes = [
-    "audio/webm;codecs=opus",
-    "audio/webm"
-  ];
+  recover() {
+    const target = Math.round(
+      sampleRate * 0.25
+    );
 
-  audioMime = mimeTypes.find(type =>
-    MediaRecorder.isTypeSupported(type)
-  ) || "";
+    let dropped = 0;
 
-  if (!audioMime) {
-    console.warn("WebM/Opus非対応");
-    return;
+    /*
+      古い音声を破棄して、
+      新しい音声を約250ms残す。
+    */
+
+    while (
+      this.queueFrames > target &&
+      this.queue.length > 1
+    ) {
+      const packet = this.queue.shift();
+
+      this.queueFrames -= packet.frames;
+
+      dropped += packet.frames;
+    }
+
+    this.currentPacket = null;
+    this.packetOffset = 0;
+
+    this.lastCorrectionFrame =
+      this.renderedFrames;
+
+    this.port.postMessage({
+      type: "correction",
+      droppedMs:
+        dropped / sampleRate * 1000
+    });
   }
+
+  capture(inputs) {
+    const input = inputs[0];
+
+    if (!input || !input.length) {
+      return;
+    }
+
+    const left = input[0];
+    const right = input[1] || left;
+
+    for (let i = 0; i < left.length; i++) {
+      const offset =
+        this.captureOffset * 2;
+
+      this.captureBuffer[offset] =
+        left[i];
+
+      this.captureBuffer[offset + 1] =
+        right[i];
+
+      this.captureOffset++;
+
+      if (
+        this.captureOffset >=
+        this.packetFrames
+      ) {
+        const pcm = new Int16Array(
+          this.packetFrames * 2
+        );
+
+        for (
+          let j = 0;
+          j < this.packetFrames * 2;
+          j++
+        ) {
+          const sample = Math.max(
+            -1,
+            Math.min(
+              1,
+              this.captureBuffer[j]
+            )
+          );
+
+          pcm[j] = sample < 0
+            ? Math.round(sample * 32768)
+            : Math.round(sample * 32767);
+        }
+
+        this.port.postMessage({
+          type: "capture",
+          buffer: pcm.buffer,
+          frames: this.packetFrames,
+          sampleRate
+        }, [pcm.buffer]);
+
+        this.captureOffset = 0;
+      }
+    }
+  }
+
+  playback(outputs) {
+    const output = outputs[0];
+
+    if (!output || !output.length) {
+      return;
+    }
+
+    const left = output[0];
+    const right = output[1] || left;
+
+    left.fill(0);
+
+    if (right !== left) {
+      right.fill(0);
+    }
+
+    if (!this.playing) {
+      if (
+        this.queueFrames >=
+        this.targetFrames
+      ) {
+        this.playing = true;
+      } else {
+        return;
+      }
+    }
+
+    for (let i = 0; i < left.length; i++) {
+
+      if (!this.currentPacket) {
+        this.currentPacket =
+          this.queue.shift() || null;
+
+        this.packetOffset = 0;
+      }
+
+      const packet = this.currentPacket;
+
+      if (!packet) {
+        this.playing = false;
+        break;
+      }
+
+      const offset =
+        this.packetOffset *
+        packet.channels;
+
+      const l =
+        packet.samples[offset] / 32768;
+
+      const r = packet.channels > 1
+        ? packet.samples[offset + 1] / 32768
+        : l;
+
+      if (!this.muted) {
+        left[i] = l;
+
+        if (right !== left) {
+          right[i] = r;
+        }
+      }
+
+      this.lastTimestamp =
+        packet.timestamp +
+        this.packetOffset /
+        packet.sampleRate * 1000;
+
+      this.packetOffset++;
+
+      this.queueFrames--;
+
+      if (
+        this.packetOffset >=
+        packet.frames
+      ) {
+        this.currentPacket = null;
+        this.packetOffset = 0;
+      }
+    }
+
+    this.reportCounter++;
+
+    if (
+      this.reportCounter >= 8
+    ) {
+      this.reportCounter = 0;
+
+      this.port.postMessage({
+        type: "playback",
+        timestamp: this.lastTimestamp,
+
+        bufferedMs:
+          this.queueFrames /
+          sampleRate * 1000,
+
+        playing: this.playing
+      });
+    }
+  }
+
+  process(inputs, outputs) {
+    this.renderedFrames +=
+      outputs[0]?.[0]?.length || 128;
+
+    if (this.mode === "sender") {
+      this.capture(inputs);
+
+      for (const output of outputs) {
+        for (const channel of output) {
+          channel.fill(0);
+        }
+      }
+
+    } else {
+      this.playback(outputs);
+    }
+
+    return true;
+  }
+}
+
+registerProcessor(
+  "caster-audio-processor",
+  CasterAudioProcessor
+);
+
+`;
+
+/* ========================================
+   AudioWorklet初期化
+======================================== */
+
+async function createAudioContext(mode) {
+  if (
+    typeof AudioContext === "undefined" &&
+    typeof webkitAudioContext === "undefined"
+  ) {
+    throw new Error(
+      "AudioContext非対応"
+    );
+  }
+
+  const Context =
+    window.AudioContext ||
+    window.webkitAudioContext;
+
+  const context = new Context({
+    latencyHint: "interactive"
+  });
+
+  if (!context.audioWorklet) {
+    await context.close();
+
+    throw new Error(
+      "AudioWorklet非対応"
+    );
+  }
+
+  const blob = new Blob(
+    [AUDIO_WORKLET_CODE],
+    { type: "text/javascript" }
+  );
+
+  const url = URL.createObjectURL(blob);
 
   try {
-    const stream = new MediaStream(tracks);
+    await context.audioWorklet.addModule(url);
 
-    audioRecorder = new MediaRecorder(stream, {
-      mimeType: audioMime,
-      audioBitsPerSecond: 256000
-    });
+  } catch (error) {
+    await context.close();
 
-    audioChunksSent = 0;
+    URL.revokeObjectURL(url);
 
-    let sendChain = Promise.resolve();
+    throw error;
+  }
 
-    const recorder = audioRecorder;
+  const node = new AudioWorkletNode(
+    context,
+    "caster-audio-processor",
+    {
+      numberOfInputs:
+        mode === "sender" ? 1 : 0,
 
-    recorder.ondataavailable = event => {
+      numberOfOutputs: 1,
+
+      outputChannelCount: [2],
+
+      processorOptions: {
+        mode
+      }
+    }
+  );
+
+  audioWorkletURL = url;
+
+  return {
+    context,
+    node
+  };
+}
+
+/* ========================================
+   音声送信
+======================================== */
+
+async function startAudioCapture() {
+  const tracks =
+    localStream?.getAudioTracks() || [];
+
+  if (!tracks.length) {
+    audioMode = "音声トラックなし";
+    return;
+  }
+
+  const generation = ++audioGeneration;
+
+  try {
+    const result =
+      await createAudioContext("sender");
+
+    if (
+      generation !== audioGeneration ||
+      role !== "sender"
+    ) {
+      result.node.disconnect();
+      await result.context.close();
+      return;
+    }
+
+    audioContext = result.context;
+    audioNode = result.node;
+
+    audioSampleRate =
+      audioContext.sampleRate;
+
+    audioChannels = 2;
+
+    const stream =
+      new MediaStream(tracks);
+
+    audioSource =
+      audioContext.createMediaStreamSource(
+        stream
+      );
+
+    audioSource.connect(audioNode);
+
+    /*
+      AudioWorkletを動作させるため、
+      無音出力を接続する。
+
+      送信音声をスピーカーへ流さない。
+    */
+
+    audioNode.connect(
+      audioContext.destination
+    );
+
+    audioMode = "AudioWorklet PCM16";
+
+    audioSendSequence = 0;
+
+    audioCapturedAt = Date.now();
+
+    audioNode.port.onmessage = event => {
+      const data = event.data;
+
       if (
-        role !== "sender" ||
-        !event.data.size
+        generation !== audioGeneration ||
+        role !== "sender"
       ) {
         return;
       }
 
-      const blob = event.data;
+      if (data.type !== "capture") {
+        return;
+      }
 
-      sendChain = sendChain.then(async () => {
-        if (
-          role !== "sender" ||
-          audioRecorder !== recorder
-        ) {
-          return;
-        }
+      const samples =
+        new Int16Array(data.buffer);
 
-        const buffer = await blob.arrayBuffer();
+      const duration =
+        data.frames /
+        data.sampleRate * 1000;
 
-        if (
-          buffer.byteLength > 256 * 1024 ||
-          ws?.readyState !== WebSocket.OPEN ||
-          ws.bufferedAmount > MAX_BUFFER
-        ) {
-          return;
-        }
+      /*
+        チャンク末尾を受け取った時刻から
+        音声チャンク先頭の時刻を推定。
+      */
 
-        if (sendBinary(FRAME_AUDIO, buffer)) {
-          sentAudioBytes += buffer.byteLength;
-          audioChunksSent++;
-        }
+      const timestamp =
+        Date.now() - duration;
 
-      }).catch(error => {
-        console.warn("Audio send:", error);
-      });
+      if (
+        ws?.readyState !== WebSocket.OPEN ||
+        ws.bufferedAmount > MAX_BUFFER
+      ) {
+        return;
+      }
+
+      if (
+        sendAudioBinary(
+          samples,
+          timestamp,
+          data.sampleRate,
+          2
+        )
+      ) {
+        sentAudioBytes +=
+          samples.byteLength;
+
+        audioSendSequence++;
+      }
     };
 
-    recorder.onerror = error => {
-      console.warn("MediaRecorder:", error);
-    };
+    await audioContext.resume();
 
-    recorder.start(AUDIO_TIMESLICE);
+    audioReady = true;
 
     updateAudioDiagnostics();
+    updateCaptureInfo();
 
   } catch (error) {
-    console.warn("Audio capture:", error);
-    audioRecorder = null;
+    console.warn(
+      "AudioWorklet送信:",
+      error
+    );
+
+    audioMode =
+      `音声利用不可: ${error.message}`;
+
+    status(
+      `映像配信中・音声エラー: ${error.message}`
+    );
   }
-}
-
-function stopAudioCapture() {
-  if (!audioRecorder) return;
-
-  audioRecorder.ondataavailable = null;
-
-  if (audioRecorder.state !== "inactive") {
-    audioRecorder.stop();
-  }
-
-  audioRecorder = null;
 }
 
 /* ========================================
-   音声バッファ情報
+   音声停止
 ======================================== */
 
-function getAudioBufferInfo() {
-  const audio = $("remoteAudio");
+function stopAudioCapture() {
+  audioGeneration++;
 
-  if (!audio || !audio.buffered.length) {
-    return null;
+  audioReady = false;
+
+  if (audioNode) {
+    audioNode.port.onmessage = null;
+
+    try {
+      audioNode.disconnect();
+    } catch {}
+
+    audioNode = null;
   }
 
+  if (audioSource) {
+    try {
+      audioSource.disconnect();
+    } catch {}
+
+    audioSource = null;
+  }
+
+  if (audioContext) {
+    audioContext.close().catch(() => {});
+
+    audioContext = null;
+  }
+
+  if (audioWorkletURL) {
+    URL.revokeObjectURL(
+      audioWorkletURL
+    );
+
+    audioWorkletURL = null;
+  }
+
+  audioMode = "なし";
+}
+
+/* ========================================
+   音声受信初期化
+======================================== */
+
+async function initializeAudioReceiver() {
+  if (audioStarting || audioReady) {
+    return;
+  }
+
+  audioStarting = true;
+
+  const generation = ++audioGeneration;
+
   try {
-    const ranges = audio.buffered;
-    const current = audio.currentTime;
+    const result =
+      await createAudioContext("receiver");
 
-    let index = -1;
+    if (
+      generation !== audioGeneration ||
+      role !== "receiver"
+    ) {
+      result.node.disconnect();
 
-    for (let i = 0; i < ranges.length; i++) {
+      await result.context.close();
+
+      return;
+    }
+
+    audioContext = result.context;
+    audioNode = result.node;
+
+    audioSampleRate =
+      audioContext.sampleRate;
+
+    audioNode.connect(
+      audioContext.destination
+    );
+
+    const audio = $("remoteAudio");
+
+    audioNode.port.postMessage({
+      type: "mute",
+      value: audio.muted
+    });
+
+    audioNode.port.onmessage = event => {
       if (
-        current >= ranges.start(i) - 0.05 &&
-        current <= ranges.end(i) + 0.05
+        generation !== audioGeneration ||
+        role !== "receiver"
       ) {
-        index = i;
-        break;
+        return;
       }
-    }
 
-    if (index === -1) {
-      index = ranges.length - 1;
-    }
+      const data = event.data;
 
-    const start = ranges.start(index);
-    const end = ranges.end(index);
+      if (data.type === "playback") {
+        audioPlaybackTimestamp =
+          data.timestamp;
 
-    return {
-      start,
-      end,
-      current,
-      latency: Math.max(0, end - current)
+        audioPlaybackReportedAt =
+          performance.now();
+
+        audioQueueDuration =
+          data.bufferedMs;
+
+        if (data.playing) {
+          $("audioStatus").textContent =
+            "PCM音声再生中";
+        }
+      }
+
+      if (data.type === "correction") {
+        audioCorrections++;
+
+        audioDroppedPackets++;
+
+        lastSyncCorrection =
+          performance.now();
+
+        /*
+          音声が追いついたら、
+          古い映像フレームも削除する。
+        */
+
+        discardOldVideoFrames();
+
+        $("audioStatus").textContent =
+          `音声同期補正: ${Math.round(data.droppedMs)}ms`;
+      }
     };
 
-  } catch {
-    return null;
+    await audioContext.resume();
+
+    audioReady = true;
+
+    audioMode = "AudioWorklet PCM16";
+
+    $("audioStatus").textContent =
+      "PCM音声受信中";
+
+  } catch (error) {
+    console.warn(
+      "AudioWorklet受信:",
+      error
+    );
+
+    $("audioStatus").textContent =
+      `音声再生エラー: ${error.message}`;
+
+  } finally {
+    audioStarting = false;
+  }
+}
+
+/* ========================================
+   音声受信
+======================================== */
+
+let pendingAudioPackets = [];
+
+function receiveAudio(buffer) {
+  if (role !== "receiver") return;
+
+  if (
+    buffer.byteLength <
+    AUDIO_HEADER_SIZE + 2
+  ) {
+    return;
+  }
+
+  receivedAudioBytes +=
+    buffer.byteLength;
+
+  const view =
+    new DataView(buffer);
+
+  const timestamp =
+    readTimestamp(view, 0);
+
+  const sampleRate =
+    view.getUint32(8, true);
+
+  const channels =
+    view.getUint8(12);
+
+  if (
+    !Number.isFinite(timestamp) ||
+    sampleRate < 8000 ||
+    sampleRate > 192000 ||
+    channels < 1 ||
+    channels > 2
+  ) {
+    return;
+  }
+
+  const samples =
+    buffer.slice(AUDIO_HEADER_SIZE);
+
+  if (
+    samples.byteLength % (channels * 2)
+  ) {
+    return;
+  }
+
+  audioReceiveSequence++;
+
+  lastAudioPacketAt = Date.now();
+
+  /*
+    初回受信時刻から時計差を推定する。
+
+    送信側と受信側の時計差、および
+    ネットワーク遅延が混ざった概算値。
+  */
+
+  const offset =
+    Date.now() - timestamp;
+
+  if (
+    audioClockOffset === null ||
+    offset < audioClockOffset
+  ) {
+    audioClockOffset = offset;
+  }
+
+  if (!audioReady) {
+    pendingAudioPackets.push({
+      buffer: samples,
+      timestamp,
+      sampleRate,
+      channels
+    });
+
+    if (
+      pendingAudioPackets.length > 50
+    ) {
+      pendingAudioPackets.shift();
+    }
+
+    initializeAudioReceiver();
+    return;
+  }
+
+  audioNode.port.postMessage({
+    type: "packet",
+    buffer: samples,
+    timestamp,
+    sampleRate,
+    channels
+  }, [samples]);
+
+  flushPendingAudioPackets();
+}
+
+function flushPendingAudioPackets() {
+  if (!audioReady || !audioNode) {
+    return;
+  }
+
+  while (pendingAudioPackets.length) {
+    const packet =
+      pendingAudioPackets.shift();
+
+    audioNode.port.postMessage({
+      type: "packet",
+      ...packet
+    }, [packet.buffer]);
   }
 }
 
@@ -1195,718 +2044,305 @@ function getAudioBufferInfo() {
 ======================================== */
 
 function resetAudioReceiver() {
-  audioGeneration++;
-
-  if (audioSyncTimer !== null) {
-    clearInterval(audioSyncTimer);
-    audioSyncTimer = null;
-  }
-
-  const oldBuffer = sourceBuffer;
-
-  if (oldBuffer?.updating) {
-    try {
-      oldBuffer.abort();
-    } catch {}
-  }
-
-  audioQueue = [];
-
-  sourceBuffer = null;
-  mediaSource = null;
-
-  audioStarted = false;
-  audioStartPending = false;
-  audioStartTime = 0;
-
-  pendingAudioBytes = 0;
-
-  audioLatency = 0;
-  audioCorrections = 0;
-
-  audioLastCorrection = 0;
-  audioLastCleanup = 0;
-
-  audioChunksReceived = 0;
-  audioLastReceiveTime = 0;
-
-  audioCleanupRunning = false;
-
-  const audio = $("remoteAudio");
-
-  audio.pause();
-  audio.playbackRate = 1;
-
-  audio.removeAttribute("src");
-  audio.load();
-
-  if (audioObjectURL) {
-    URL.revokeObjectURL(audioObjectURL);
-    audioObjectURL = null;
-  }
-
-  $("audioStatus").textContent = "音声待機中";
-}
-
-/* ========================================
-   MediaSource初期化
-======================================== */
-
-function initializeAudioReceiver() {
-  const mime = "audio/webm;codecs=opus";
-
-  if (
-    typeof MediaSource === "undefined" ||
-    !MediaSource.isTypeSupported(mime)
-  ) {
-    $("audioStatus").textContent =
-      "WebM/Opus再生に非対応です";
-
-    return false;
-  }
-
-  const generation = ++audioGeneration;
-  const source = new MediaSource();
-
-  mediaSource = source;
-
-  audioObjectURL = URL.createObjectURL(source);
-
-  const audio = $("remoteAudio");
-
-  audio.src = audioObjectURL;
-  audio.playbackRate = 1;
-
-  source.addEventListener("sourceopen", () => {
-    if (
-      generation !== audioGeneration ||
-      source.readyState !== "open"
-    ) {
-      return;
-    }
-
-    try {
-      const buffer = source.addSourceBuffer(mime);
-
-      sourceBuffer = buffer;
-      buffer.mode = "sequence";
-
-      buffer.addEventListener("updateend", () => {
-        if (generation !== audioGeneration) {
-          return;
-        }
-
-        audioCleanupRunning = false;
-
-        tryStartAudio();
-
-        // バッファ処理完了後に次の音声を追加
-        flushAudioQueue();
-      });
-
-      buffer.addEventListener("error", error => {
-        if (generation !== audioGeneration) return;
-
-        console.warn("SourceBuffer:", error);
-
-        $("audioStatus").textContent =
-          "音声バッファエラー";
-      });
-
-      flushAudioQueue();
-
-    } catch (error) {
-      $("audioStatus").textContent =
-        `音声初期化エラー: ${error.message}`;
-    }
-
-  }, { once: true });
-
-  audioSyncTimer = setInterval(() => {
-    if (generation !== audioGeneration) return;
-
-    synchronizeAudio();
-  }, 100);
-
-  return true;
-}
-
-/* ========================================
-   初回音声再生
-======================================== */
-
-function tryStartAudio() {
-  if (
-    audioStarted ||
-    audioStartPending ||
-    role !== "receiver"
-  ) {
-    return;
-  }
-
-  const audio = $("remoteAudio");
-  const info = getAudioBufferInfo();
-
-  if (!info) return;
-
-  if (info.end - info.start < 0.08) {
-    return;
-  }
-
-  audioStartPending = true;
-
-  // 初回だけ最新音声に近い位置から再生
-  const target = Math.max(
-    info.start,
-    info.end - AUDIO_START_LATENCY
-  );
-
-  try {
-    if (target > audio.currentTime + 0.05) {
-      audio.currentTime = target;
-    }
-  } catch (error) {
-    console.warn("Audio start seek:", error);
-  }
-
-  audio.playbackRate = 1;
-
-  const generation = audioGeneration;
-
-  audio.play().then(() => {
-    if (
-      generation !== audioGeneration ||
-      role !== "receiver"
-    ) {
-      return;
-    }
-
-    audioStarted = true;
-    audioStartPending = false;
-
-    audioStartTime = performance.now();
-
-    $("audioStatus").textContent =
-      "音声再生中（自動同期ON）";
-
-  }).catch(error => {
-    if (generation !== audioGeneration) return;
-
-    audioStartPending = false;
-
-    console.warn("Audio play:", error);
-
-    $("audioStatus").textContent =
-      "音声再生には操作が必要です";
-  });
-}
-
-/* ========================================
-   音声遅延修正 v27.3
-======================================== */
-
-function correctAudioLatency(info) {
-  if (!audioStarted) return false;
-
-  const audio = $("remoteAudio");
-
-  if (!audio || audio.seeking) {
-    return false;
-  }
-
-  const now = performance.now();
-
-  // 初回再生直後は補正しない
-  if (
-    now - audioStartTime <
-    AUDIO_START_GRACE
-  ) {
-    return false;
-  }
-
-  // 連続ジャンプを防止
-  if (
-    now - audioLastCorrection <
-    AUDIO_CORRECTION_INTERVAL
-  ) {
-    return false;
-  }
-
-  // 0.5秒未満なら何もしない
-  if (info.latency <= AUDIO_MAX_LATENCY) {
-    return false;
-  }
-
-  // 最新音声から約0.18秒後ろを目標にする
-  const target = Math.max(
-    info.start,
-    info.end - AUDIO_TARGET_LATENCY
-  );
-
-  const jump = target - audio.currentTime;
-
-  if (jump < 0.1) {
-    return false;
-  }
-
-  try {
-    audio.currentTime = target;
-
-    audio.playbackRate = 1;
-
-    audioCorrections++;
-    audioLastCorrection = now;
-
-    audioLatency = AUDIO_TARGET_LATENCY;
-
-    $("audioStatus").textContent =
-      `音声同期補正: ${Math.round(jump * 1000)}ms`;
-
-    return true;
-
-  } catch (error) {
-    console.warn("Audio correction:", error);
-    return false;
-  }
-}
-
-/* ========================================
-   古い音声バッファ削除
-======================================== */
-
-function cleanupAudioBuffer() {
-  if (
-    !sourceBuffer ||
-    sourceBuffer.updating ||
-    mediaSource?.readyState !== "open" ||
-    audioCleanupRunning
-  ) {
-    return;
-  }
-
-  const now = performance.now();
-
-  if (
-    now - audioLastCleanup <
-    AUDIO_CLEANUP_INTERVAL
-  ) {
-    return;
-  }
-
-  const info = getAudioBufferInfo();
-
-  if (!info) return;
-
-  const removeEnd =
-    info.current - AUDIO_KEEP_BEHIND;
-
-  if (removeEnd <= info.start + 1) {
-    return;
-  }
-
-  try {
-    audioCleanupRunning = true;
-
-    sourceBuffer.remove(
-      info.start,
-      removeEnd
-    );
-
-    audioLastCleanup = now;
-
-  } catch (error) {
-    audioCleanupRunning = false;
-
-    console.warn("Audio cleanup:", error);
-  }
-}
-
-/* ========================================
-   音声同期監視
-======================================== */
-
-function synchronizeAudio() {
-  if (role !== "receiver") return;
-
-  const audio = $("remoteAudio");
-
-  const info = getAudioBufferInfo();
-
-  if (!info) return;
-
-  audioLatency = info.latency;
-
-  if (!audioStarted) {
-    tryStartAudio();
-    return;
-  }
-
-  // v27.2の可変再生速度方式は撤去
-  audio.playbackRate = 1;
-
-  // バッファが0.5秒以上先行したら補正
-  correctAudioLatency(info);
-
-  // 古い音声データを削除
-  cleanupAudioBuffer();
-
-  // 意図せず一時停止していたら再開
-  if (
-    audio.paused &&
-    !audioStartPending
-  ) {
-    audio.play().catch(() => {});
-  }
-}
-
-/* ========================================
-   音声キュー
-======================================== */
-
-function flushAudioQueue() {
-  if (
-    !sourceBuffer ||
-    sourceBuffer.updating ||
-    !audioQueue.length ||
-    mediaSource?.readyState !== "open"
-  ) {
-    return;
-  }
-
-  const buffer = audioQueue.shift();
-
-  pendingAudioBytes = Math.max(
-    0,
-    pendingAudioBytes - buffer.byteLength
-  );
-
-  try {
-    sourceBuffer.appendBuffer(buffer);
-
-  } catch (error) {
-    console.warn("Audio append:", error);
-
-    $("audioStatus").textContent =
-      `音声再生エラー: ${error.message}`;
-  }
-}
-
-function receiveAudio(buffer) {
-  if (role !== "receiver") return;
-
-  receivedAudioBytes += buffer.byteLength;
-  audioChunksReceived++;
-
-  audioLastReceiveTime = performance.now();
-
-  if (!mediaSource) {
-    if (!initializeAudioReceiver()) return;
-  }
-
-  if (
-    pendingAudioBytes + buffer.byteLength >
-    AUDIO_QUEUE_LIMIT
-  ) {
-    $("audioStatus").textContent =
-      "音声受信キューが増加しています";
-
-    // WebMチャンクを途中で捨てると
-    // MediaSourceの解析状態が壊れる可能性がある
-    return;
-  }
-
-  audioQueue.push(buffer);
-  pendingAudioBytes += buffer.byteLength;
-
-  flushAudioQueue();
-}
-
-/* ========================================
-   送信開始
-======================================== */
-
-async function startSender() {
-  if (role || senderStarting) return;
-
-  if (ws?.readyState !== WebSocket.OPEN) {
-    status("WebSocketに接続されていません");
-    return;
-  }
-
-  const room = $("roomId").value;
-
-  if (!room.trim()) {
-    status("ルームIDを入力してください");
-    return;
-  }
-
-  senderStarting = true;
-  updateButtons();
-
-  const settings = readSettings();
-
-  try {
-    localStream =
-      await navigator.mediaDevices.getDisplayMedia({
-        video: initialConstraints(settings),
-        audio: settings.audio
-          ? {
-              echoCancellation: false,
-              noiseSuppression: false,
-              autoGainControl: false
-            }
-          : false
-      });
-
-    const track = localStream.getVideoTracks()[0];
-
-    if (!track) {
-      throw new Error("映像トラックなし");
-    }
-
-    audioInitialSettings =
-      localStream.getAudioTracks().map(track =>
-        track.getSettings()
-      );
-
-    role = "sender";
-    currentRoom = room;
-    appliedSettings = settings;
-
-    track.onended = () => stopSender(true);
-
-    await applyCaptureSettings(settings);
-
-    updatePreview();
-    updateAudioDiagnostics();
-
-    signal({
-      type: "join",
-      role: "sender",
-      room,
-      name: $("senderName").value,
-      memo: $("roomMemo").value
-    });
-
-    await startVideoCapture();
-
-    sentAudioBytes = 0;
-
-    if (settings.audio) {
-      startAudioCapture();
-    }
-
-    updateCaptureInfo();
-    updateButtons();
-    renderRooms();
-
-    status(
-      `WebSocket配信開始: ${room}\n` +
-      `映像処理: ${workerMode ? "Worker" : "Canvas"}`
-    );
-
-  } catch (error) {
-    stopVideoCapture();
-    stopAudioCapture();
-
-    if (localStream) {
-      for (const track of localStream.getTracks()) {
-        track.stop();
-      }
-    }
-
-    localStream = null;
-
-    role = null;
-    currentRoom = null;
-    appliedSettings = null;
-
-    status(`画面共有エラー: ${error.message}`);
-
-    updateCaptureInfo();
-    updateAudioDiagnostics();
-
-  } finally {
-    senderStarting = false;
-    updateButtons();
-  }
-}
-
-function stopSender(sendLeave = true) {
-  if (role !== "sender") return;
-
-  stopAudioMonitor();
-
-  stopVideoCapture();
   stopAudioCapture();
 
-  if (localStream) {
-    for (const track of localStream.getTracks()) {
-      track.onended = null;
-      track.stop();
-    }
-  }
+  pendingAudioPackets = [];
 
-  localStream = null;
-  appliedSettings = null;
+  audioReceiveSequence = 0;
 
-  $("localVideo").srcObject = null;
-  $("senderStats").textContent = "未配信";
+  receivedAudioBytes = 0;
 
-  role = null;
-  currentRoom = null;
+  audioPlaybackTimestamp = 0;
+  audioPlaybackReportedAt = 0;
 
-  if (sendLeave) {
-    signal({ type: "leave" });
-  }
+  audioQueueDuration = 0;
 
-  updateCaptureInfo();
-  updateAudioDiagnostics();
+  audioCorrections = 0;
+  audioDroppedPackets = 0;
 
-  updateButtons();
-  renderRooms();
+  lastSyncCorrection = 0;
 
-  status("配信を停止しました");
-}
+  audioClockOffset = null;
 
-async function applySettings() {
-  if (
-    role !== "sender" ||
-    !localStream ||
-    settingsApplying
-  ) {
-    return;
-  }
+  audioStarting = false;
 
-  settingsApplying = true;
-  updateButtons();
-
-  try {
-    appliedSettings = readSettings();
-
-    await applyCaptureSettings(appliedSettings);
-
-    if (workerMode && worker) {
-      worker.postMessage({
-        type: "settings",
-        settings: {
-          resolution: appliedSettings.resolution,
-          jpegQuality: appliedSettings.jpegQuality
-        }
-      });
-
-    } else {
-      startCanvasTimer();
-    }
-
-    updatePreview();
-    updateCaptureInfo();
-
-    status("設定を適用しました");
-
-  } catch (error) {
-    status(`設定変更エラー: ${error.message}`);
-
-  } finally {
-    settingsApplying = false;
-    updateButtons();
-  }
+  $("audioStatus").textContent =
+    "音声待機中";
 }
 
 /* ========================================
-   JPEG受信
+   映像受信
 ======================================== */
 
 function clearVideoReceiver() {
-  receiverToken++;
+  videoReceiverToken++;
 
-  pendingBlob = null;
-  decoding = false;
+  videoQueue = [];
 
   receivedFrames = 0;
   receivedVideoBytes = 0;
 
   receiverHistory = {};
+
   lastFrameAt = 0;
+
+  latestVideoTimestamp = 0;
+  lastVideoDisplayedTimestamp = 0;
+
+  videoClockOffset = null;
+
+  if (videoRenderTimer !== null) {
+    clearInterval(videoRenderTimer);
+
+    videoRenderTimer = null;
+  }
 
   remoteCanvas.width = 0;
   remoteCanvas.height = 0;
 }
 
+/* ========================================
+   JPEGフレーム受信
+======================================== */
+
 function receiveVideo(buffer) {
   if (role !== "receiver") return;
 
-  pendingBlob = new Blob(
-    [buffer],
-    { type: "image/jpeg" }
-  );
+  if (
+    buffer.byteLength <=
+    VIDEO_HEADER_SIZE
+  ) {
+    return;
+  }
 
-  receivedVideoBytes += buffer.byteLength;
+  const view =
+    new DataView(buffer);
 
-  if (!decoding) {
-    decodeNextFrame();
+  const timestamp =
+    readTimestamp(view, 0);
+
+  if (!Number.isFinite(timestamp)) {
+    return;
+  }
+
+  const jpeg =
+    buffer.slice(VIDEO_HEADER_SIZE);
+
+  receivedVideoBytes +=
+    jpeg.byteLength;
+
+  latestVideoTimestamp =
+    timestamp;
+
+  const offset =
+    Date.now() - timestamp;
+
+  if (
+    videoClockOffset === null ||
+    offset < videoClockOffset
+  ) {
+    videoClockOffset = offset;
+  }
+
+  videoQueue.push({
+    timestamp,
+    jpeg
+  });
+
+  if (
+    videoQueue.length >
+    VIDEO_QUEUE_LIMIT
+  ) {
+    videoQueue.splice(
+      0,
+      videoQueue.length -
+      VIDEO_QUEUE_LIMIT
+    );
+  }
+
+  if (videoRenderTimer === null) {
+    videoRenderTimer = setInterval(
+      renderSynchronizedVideo,
+      10
+    );
   }
 }
 
-async function decodeNextFrame() {
-  if (decoding) return;
+/* ========================================
+   映像・音声同期
+======================================== */
 
-  decoding = true;
+function getEstimatedAudioTimestamp() {
+  if (
+    !audioReady ||
+    !audioPlaybackTimestamp
+  ) {
+    return null;
+  }
 
-  const token = receiverToken;
+  const elapsed =
+    performance.now() -
+    audioPlaybackReportedAt;
+
+  /*
+    AudioWorkletから最後に報告された
+    再生時刻を使う。
+
+    ただし推定時間は最大100ms。
+  */
+
+  return (
+    audioPlaybackTimestamp +
+    Math.max(
+      0,
+      Math.min(100, elapsed)
+    )
+  );
+}
+
+function discardOldVideoFrames() {
+  const audioTime =
+    getEstimatedAudioTimestamp();
+
+  if (audioTime === null) {
+    return;
+  }
+
+  while (
+    videoQueue.length > 1 &&
+    videoQueue[1].timestamp <
+      audioTime - 100
+  ) {
+    videoQueue.shift();
+  }
+}
+
+let videoDecodeBusy = false;
+
+async function renderSynchronizedVideo() {
+  if (
+    role !== "receiver" ||
+    videoDecodeBusy ||
+    !videoQueue.length
+  ) {
+    return;
+  }
+
+  let selected = null;
+
+  const audioTime =
+    getEstimatedAudioTimestamp();
+
+  /*
+    音声がある場合は、
+    音声の再生時刻に近い映像を選ぶ。
+
+    音声がない場合は最新フレームを表示。
+  */
+
+  if (audioTime !== null) {
+    while (
+      videoQueue.length &&
+      videoQueue[0].timestamp <=
+        audioTime + 30
+    ) {
+      selected =
+        videoQueue.shift();
+    }
+
+    /*
+      音声が長時間止まった場合は
+      映像も永久には停止させない。
+    */
+
+    if (
+      !selected &&
+      videoQueue.length &&
+      Date.now() -
+        videoQueue[0].timestamp >
+        VIDEO_MAX_WAIT_MS +
+        (videoClockOffset || 0)
+    ) {
+      selected =
+        videoQueue.pop();
+
+      videoQueue = [];
+    }
+
+  } else {
+    selected =
+      videoQueue.pop();
+
+    videoQueue = [];
+  }
+
+  if (!selected) return;
+
+  videoDecodeBusy = true;
+
+  const token =
+    videoReceiverToken;
 
   try {
-    while (
-      token === receiverToken &&
-      pendingBlob &&
-      role === "receiver"
+    const blob = new Blob(
+      [selected.jpeg],
+      { type: "image/jpeg" }
+    );
+
+    const bitmap =
+      await createImageBitmap(blob);
+
+    if (
+      token !== videoReceiverToken ||
+      role !== "receiver"
     ) {
-      const blob = pendingBlob;
-      pendingBlob = null;
-
-      let bitmap;
-
-      try {
-        bitmap = await createImageBitmap(blob);
-      } catch (error) {
-        console.warn("JPEG:", error);
-        continue;
-      }
-
-      if (
-        token !== receiverToken ||
-        role !== "receiver"
-      ) {
-        bitmap.close();
-        break;
-      }
-
-      if (remoteCanvas.width !== bitmap.width) {
-        remoteCanvas.width = bitmap.width;
-      }
-
-      if (remoteCanvas.height !== bitmap.height) {
-        remoteCanvas.height = bitmap.height;
-      }
-
-      remoteContext.drawImage(bitmap, 0, 0);
-
       bitmap.close();
-
-      receivedFrames++;
-      lastFrameAt = Date.now();
+      return;
     }
+
+    if (
+      remoteCanvas.width !== bitmap.width
+    ) {
+      remoteCanvas.width =
+        bitmap.width;
+    }
+
+    if (
+      remoteCanvas.height !== bitmap.height
+    ) {
+      remoteCanvas.height =
+        bitmap.height;
+    }
+
+    remoteContext.drawImage(
+      bitmap,
+      0,
+      0
+    );
+
+    bitmap.close();
+
+    receivedFrames++;
+
+    lastFrameAt = Date.now();
+
+    lastVideoDisplayedTimestamp =
+      selected.timestamp;
+
+  } catch (error) {
+    console.warn(
+      "JPEG decode:",
+      error
+    );
 
   } finally {
-    if (token === receiverToken) {
-      decoding = false;
-
-      if (pendingBlob) {
-        decodeNextFrame();
-      }
-    }
+    videoDecodeBusy = false;
   }
 }
+
+/* ========================================
+   バイナリ受信
+======================================== */
 
 function handleBinary(buffer) {
   if (
@@ -1916,8 +2352,14 @@ function handleBinary(buffer) {
     return;
   }
 
-  const kind = new Uint8Array(buffer)[0];
-  const payload = buffer.slice(1);
+  const view =
+    new DataView(buffer);
+
+  const kind =
+    view.getUint8(0);
+
+  const payload =
+    buffer.slice(1);
 
   if (kind === FRAME_VIDEO) {
     receiveVideo(payload);
@@ -1929,22 +2371,287 @@ function handleBinary(buffer) {
 }
 
 /* ========================================
-   受信
+   送信開始
 ======================================== */
 
-function startReceiver(room = $("roomId").value) {
+async function startSender() {
+  if (role || senderStarting) return;
+
+  if (
+    ws?.readyState !== WebSocket.OPEN
+  ) {
+    status(
+      "WebSocketに接続されていません"
+    );
+    return;
+  }
+
+  const room =
+    $("roomId").value;
+
   if (!room.trim()) {
-    status("ルームIDを入力してください");
+    status(
+      "ルームIDを入力してください"
+    );
     return;
   }
 
-  if (ws?.readyState !== WebSocket.OPEN) {
-    status("WebSocketに接続されていません");
+  senderStarting = true;
+
+  updateButtons();
+
+  const settings =
+    readSettings();
+
+  try {
+    localStream =
+      await navigator.mediaDevices.getDisplayMedia({
+        video:
+          initialConstraints(settings),
+
+        audio: settings.audio
+          ? {
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false
+            }
+          : false
+      });
+
+    const track =
+      localStream.getVideoTracks()[0];
+
+    if (!track) {
+      throw new Error(
+        "映像トラックなし"
+      );
+    }
+
+    audioInitialSettings =
+      localStream.getAudioTracks().map(
+        track => track.getSettings()
+      );
+
+    role = "sender";
+    currentRoom = room;
+
+    appliedSettings = settings;
+
+    track.onended = () =>
+      stopSender(true);
+
+    await applyCaptureSettings(
+      settings
+    );
+
+    updatePreview();
+
+    updateAudioDiagnostics();
+
+    signal({
+      type: "join",
+      role: "sender",
+      room,
+
+      name:
+        $("senderName").value,
+
+      memo:
+        $("roomMemo").value
+    });
+
+    await startVideoCapture();
+
+    sentAudioBytes = 0;
+
+    if (settings.audio) {
+      await startAudioCapture();
+    }
+
+    updateCaptureInfo();
+    updateButtons();
+    renderRooms();
+
+    status(
+      `WebSocket配信開始: ${room}\n` +
+      `映像処理: ${
+        workerMode ? "Worker" : "Canvas"
+      }\n` +
+      `音声: ${audioMode}`
+    );
+
+  } catch (error) {
+    stopVideoCapture();
+    stopAudioCapture();
+
+    if (localStream) {
+      for (
+        const track of
+        localStream.getTracks()
+      ) {
+        track.stop();
+      }
+    }
+
+    localStream = null;
+
+    role = null;
+    currentRoom = null;
+
+    appliedSettings = null;
+
+    status(
+      `画面共有エラー: ${error.message}`
+    );
+
+    updateCaptureInfo();
+    updateAudioDiagnostics();
+
+  } finally {
+    senderStarting = false;
+    updateButtons();
+  }
+}
+
+/* ========================================
+   送信停止
+======================================== */
+
+function stopSender(sendLeave = true) {
+  if (role !== "sender") return;
+
+  stopAudioMonitor();
+
+  stopVideoCapture();
+  stopAudioCapture();
+
+  if (localStream) {
+    for (
+      const track of
+      localStream.getTracks()
+    ) {
+      track.onended = null;
+      track.stop();
+    }
+  }
+
+  localStream = null;
+  appliedSettings = null;
+
+  $("localVideo").srcObject = null;
+
+  $("senderStats").textContent =
+    "未配信";
+
+  role = null;
+  currentRoom = null;
+
+  if (sendLeave) {
+    signal({
+      type: "leave"
+    });
+  }
+
+  updateCaptureInfo();
+  updateAudioDiagnostics();
+
+  updateButtons();
+  renderRooms();
+
+  status(
+    "配信を停止しました"
+  );
+}
+
+/* ========================================
+   設定変更
+======================================== */
+
+async function applySettings() {
+  if (
+    role !== "sender" ||
+    !localStream ||
+    settingsApplying
+  ) {
     return;
   }
 
-  if (role === "sender" || senderStarting) {
-    status("配信中は受信できません");
+  settingsApplying = true;
+
+  updateButtons();
+
+  try {
+    appliedSettings =
+      readSettings();
+
+    await applyCaptureSettings(
+      appliedSettings
+    );
+
+    if (workerMode && worker) {
+      worker.postMessage({
+        type: "settings",
+        settings: {
+          resolution:
+            appliedSettings.resolution,
+
+          jpegQuality:
+            appliedSettings.jpegQuality
+        }
+      });
+
+    } else {
+      startCanvasTimer();
+    }
+
+    updatePreview();
+    updateCaptureInfo();
+
+    status(
+      "設定を適用しました"
+    );
+
+  } catch (error) {
+    status(
+      `設定変更エラー: ${error.message}`
+    );
+
+  } finally {
+    settingsApplying = false;
+    updateButtons();
+  }
+}
+
+/* ========================================
+   受信開始
+======================================== */
+
+function startReceiver(
+  room = $("roomId").value
+) {
+  if (!room.trim()) {
+    status(
+      "ルームIDを入力してください"
+    );
+    return;
+  }
+
+  if (
+    ws?.readyState !== WebSocket.OPEN
+  ) {
+    status(
+      "WebSocketに接続されていません"
+    );
+    return;
+  }
+
+  if (
+    role === "sender" ||
+    senderStarting
+  ) {
+    status(
+      "配信中は受信できません"
+    );
     return;
   }
 
@@ -1955,12 +2662,11 @@ function startReceiver(room = $("roomId").value) {
   clearVideoReceiver();
   resetAudioReceiver();
 
-  receivedAudioBytes = 0;
-
   role = "receiver";
   currentRoom = room;
 
   $("roomId").value = room;
+
   $("roomId").dataset.edited = "1";
 
   signal({
@@ -1970,8 +2676,15 @@ function startReceiver(room = $("roomId").value) {
   });
 
   updateButtons();
-  status(`受信待機中: ${room}`);
+
+  status(
+    `受信待機中: ${room}`
+  );
 }
+
+/* ========================================
+   受信停止
+======================================== */
 
 function stopReceiver(sendLeave = true) {
   if (role !== "receiver") return;
@@ -1983,17 +2696,23 @@ function stopReceiver(sendLeave = true) {
   currentRoom = null;
 
   if (sendLeave) {
-    signal({ type: "leave" });
+    signal({
+      type: "leave"
+    });
   }
 
-  $("receiverStats").textContent = "未接続";
+  $("receiverStats").textContent =
+    "未接続";
 
   updateButtons();
-  status("受信を停止しました");
+
+  status(
+    "受信を停止しました"
+  );
 }
 
 /* ========================================
-   メッセージ
+   サーバーメッセージ
 ======================================== */
 
 function handleMessage(data) {
@@ -2007,11 +2726,15 @@ function handleMessage(data) {
       break;
 
     case "room-list":
-      activeRooms = data.rooms || [];
+      activeRooms =
+        data.rooms || [];
 
       renderRooms();
 
-      if (!role && !$("roomId").dataset.edited) {
+      if (
+        !role &&
+        !$("roomId").dataset.edited
+      ) {
         $("roomId").value =
           data.suggestedRoom || "I";
       }
@@ -2022,13 +2745,17 @@ function handleMessage(data) {
         data.role === role &&
         data.room === currentRoom
       ) {
-        status(`ルーム参加: ${data.room}`);
+        status(
+          `ルーム参加: ${data.room}`
+        );
       }
       break;
 
     case "sender-ready":
       if (role === "receiver") {
-        status("WebSocket映像を受信中...");
+        status(
+          "WebSocket映像を受信中..."
+        );
       }
       break;
 
@@ -2037,17 +2764,26 @@ function handleMessage(data) {
         clearVideoReceiver();
         resetAudioReceiver();
 
-        $("receiverStats").textContent = "配信終了";
-        status("配信が終了しました");
+        $("receiverStats").textContent =
+          "配信終了";
+
+        status(
+          "配信が終了しました"
+        );
       }
       break;
 
     case "error":
-      status(`エラー: ${data.message}`);
+      status(
+        `エラー: ${data.message}`
+      );
 
       if (role === "sender") {
         stopSender(true);
-        status(`エラー: ${data.message}`);
+
+        status(
+          `エラー: ${data.message}`
+        );
       }
       break;
   }
@@ -2058,21 +2794,28 @@ function handleMessage(data) {
 ======================================== */
 
 function renderRooms() {
-  const container = $("roomList");
+  const container =
+    $("roomList");
 
   container.replaceChildren();
 
-  const visible = activeRooms.filter(room =>
-    !(role === "sender" && room.id === currentRoom)
-  );
+  const visible =
+    activeRooms.filter(room =>
+      !(
+        role === "sender" &&
+        room.id === currentRoom
+      )
+    );
 
   $("roomCount").textContent =
     `現在 ${visible.length} 件の配信があります`;
 
   if (!visible.length) {
-    const p = document.createElement("p");
+    const p =
+      document.createElement("p");
 
     p.className = "small";
+
     p.textContent =
       "現在、ほかに配信中のルームはありません。";
 
@@ -2081,35 +2824,51 @@ function renderRooms() {
   }
 
   for (const room of visible) {
-    const card = document.createElement("div");
+    const card =
+      document.createElement("div");
+
     card.className = "room-card";
 
-    const title = document.createElement("div");
-    title.className = "room-title";
-    title.textContent = `🟢 ${room.id}`;
+    const title =
+      document.createElement("div");
 
-    const name = document.createElement("div");
+    title.className = "room-title";
+
+    title.textContent =
+      `🟢 ${room.id}`;
+
+    const name =
+      document.createElement("div");
+
     name.className = "room-name";
-    name.textContent = `配信者：${room.name}`;
+
+    name.textContent =
+      `配信者：${room.name}`;
 
     card.append(title, name);
 
     if (room.memo) {
-      const memo = document.createElement("div");
+      const memo =
+        document.createElement("div");
 
       memo.className = "room-memo";
-      memo.textContent = room.memo;
+
+      memo.textContent =
+        room.memo;
 
       card.appendChild(memo);
     }
 
-    const button = document.createElement("button");
+    const button =
+      document.createElement("button");
 
     button.className = "room-watch";
+
     button.textContent = "📺 視聴";
 
     button.disabled =
-      role === "sender" || senderStarting;
+      role === "sender" ||
+      senderStarting;
 
     button.onclick = () => {
       startReceiver(room.id);
@@ -2121,17 +2880,26 @@ function renderRooms() {
     };
 
     card.appendChild(button);
+
     container.appendChild(card);
   }
 }
+
+/* ========================================
+   配信情報更新
+======================================== */
 
 function updateMetadata() {
   if (role !== "sender") return;
 
   signal({
     type: "update-room",
-    name: $("senderName").value,
-    memo: $("roomMemo").value
+
+    name:
+      $("senderName").value,
+
+    memo:
+      $("roomMemo").value
   });
 }
 
@@ -2140,8 +2908,11 @@ function updateMetadata() {
 ======================================== */
 
 function rate(history, key, count) {
-  const now = performance.now();
-  const previous = history[key];
+  const now =
+    performance.now();
+
+  const previous =
+    history[key];
 
   history[key] = {
     count,
@@ -2155,7 +2926,10 @@ function rate(history, key, count) {
 
   if (seconds <= 0) return "?";
 
-  return ((count - previous.count) / seconds).toFixed(1);
+  return (
+    (count - previous.count) /
+    seconds
+  ).toFixed(1);
 }
 
 function updateStats() {
@@ -2181,34 +2955,56 @@ function updateStats() {
     const videoMbps =
       videoRate === "?"
         ? "?"
-        : (Number(videoRate) * 8 / 1e6).toFixed(2);
+        : (
+            Number(videoRate) *
+            8 / 1e6
+          ).toFixed(2);
 
-    const audioKbps =
+    const audioMbps =
       audioRate === "?"
         ? "?"
-        : (Number(audioRate) * 8 / 1000).toFixed(1);
+        : (
+            Number(audioRate) *
+            8 / 1e6
+          ).toFixed(2);
 
     $("senderStats").textContent =
-`========== WebSocket送信 ==========
+`========== WebSocket送信 v27.4 ==========
 
 【映像】
 処理方式: ${workerMode ? "Worker" : "Canvas"}
-目標FPS: ${appliedSettings?.fps ?? "?"}
-実測送信FPS: ${fps}
-送信累計: ${sentFrames}
-スキップ累計: ${skippedFrames}
+
+目標FPS:
+${appliedSettings?.fps ?? "?"}
+
+実測送信FPS:
+${fps}
+
+送信累計:
+${sentFrames}
+
+スキップ累計:
+${skippedFrames}
+
+【音声】
+方式:
+${audioMode}
+
+サンプルレート:
+${audioSampleRate} Hz
+
+チャンネル:
+${audioChannels}
+
+PCM送信パケット:
+${audioSendSequence}
+
+音声速度:
+${audioMbps} Mbps
 
 【通信】
-映像速度: ${videoMbps} Mbps
-音声速度: ${audioKbps} Kbps
-
-【音声 v27.3】
-方式: MediaRecorder / WebM Opus
-目標ビットレート: 256 Kbps
-送信間隔設定: ${AUDIO_TIMESLICE} ms
-
-音声送信チャンク:
-${audioChunksSent}
+映像速度:
+${videoMbps} Mbps
 
 映像送信累計:
 ${(sentVideoBytes / 1024 / 1024).toFixed(2)} MB
@@ -2237,72 +3033,84 @@ ${ws?.bufferedAmount ?? "?"} bytes
     const videoMbps =
       videoRate === "?"
         ? "?"
-        : (Number(videoRate) * 8 / 1e6).toFixed(2);
+        : (
+            Number(videoRate) *
+            8 / 1e6
+          ).toFixed(2);
 
-    const audio = $("remoteAudio");
-    const info = getAudioBufferInfo();
+    const audioTime =
+      getEstimatedAudioTimestamp();
 
-    const latencyText = info
-      ? `${(info.latency * 1000).toFixed(0)} ms`
-      : "計測待機中";
+    const syncDifference =
+      audioTime !== null &&
+      lastVideoDisplayedTimestamp
+        ? (
+            lastVideoDisplayedTimestamp -
+            audioTime
+          ).toFixed(0)
+        : "?";
 
-    const audioState = !mediaSource
-      ? "音声未受信"
-      : audioStarted
-        ? audio.paused
-          ? "一時停止中"
-          : "再生中"
-        : "再生準備中";
+    const audioDelay =
+      audioClockOffset !== null &&
+      audioTime !== null
+        ? (
+            Date.now() -
+            audioTime -
+            audioClockOffset
+          ).toFixed(0)
+        : "?";
 
     $("receiverStats").textContent =
-`========== WebSocket受信 ==========
+`========== WebSocket受信 v27.4 ==========
 
 【映像】
-実測表示FPS: ${fps}
-表示累計: ${receivedFrames}
+実測表示FPS:
+${fps}
+
+表示累計:
+${receivedFrames}
 
 解像度:
 ${remoteCanvas.width || "?"}×${remoteCanvas.height || "?"}
 
+映像待機フレーム:
+${videoQueue.length}
+
+【音声】
+方式:
+${audioMode}
+
+再生状態:
+${audioReady ? "AudioWorklet動作中" : "待機中"}
+
+受信パケット:
+${audioReceiveSequence}
+
+音声バッファ:
+${audioQueueDuration.toFixed(0)} ms
+
+自動補正回数:
+${audioCorrections}
+
+【AV同期】
+映像と音声の時刻差:
+${syncDifference} ms
+
+音声の推定追加遅延:
+${audioDelay} ms
+
+※時刻差は送信側で取得した
+推定タイムスタンプに基づきます。
+
 【通信】
-映像受信速度: ${videoMbps} Mbps
+映像受信速度:
+${videoMbps} Mbps
 
 映像受信累計:
 ${(receivedVideoBytes / 1024 / 1024).toFixed(2)} MB
 
 音声受信累計:
 ${(receivedAudioBytes / 1024 / 1024).toFixed(2)} MB
-
-【音声同期 v27.3】
-再生状態:
-${audioState}
-
-音声バッファ先端との差:
-${latencyText}
-
-許容バッファ遅延:
-${AUDIO_MAX_LATENCY * 1000} ms
-
-補正後の目標遅延:
-${AUDIO_TARGET_LATENCY * 1000} ms
-
-自動補正回数:
-${audioCorrections}
-
-再生速度:
-${audio.playbackRate.toFixed(3)} 倍
-
-受信チャンク累計:
-${audioChunksReceived}
-
-未処理キュー:
-${audioQueue.length} チャンク
-
-未処理データ:
-${(pendingAudioBytes / 1024).toFixed(1)} KB
-
-※バッファ先端との差は
-映像との実際の同期誤差ではありません。
 
 最終映像フレーム:
 ${lastFrameAt
@@ -2316,9 +3124,12 @@ ${lastFrameAt
    イベント
 ======================================== */
 
-$("roomId").addEventListener("input", () => {
-  $("roomId").dataset.edited = "1";
-});
+$("roomId").addEventListener(
+  "input",
+  () => {
+    $("roomId").dataset.edited = "1";
+  }
+);
 
 $("senderName").addEventListener(
   "input",
@@ -2330,14 +3141,23 @@ $("roomMemo").addEventListener(
   updateMetadata
 );
 
-$("sendButton").onclick = startSender;
-$("stopButton").onclick = () => stopSender(true);
+$("sendButton").onclick =
+  startSender;
 
-$("receiveButton").onclick = () => startReceiver();
-$("leaveButton").onclick = () => stopReceiver(true);
+$("stopButton").onclick =
+  () => stopSender(true);
 
-$("applyButton").onclick = applySettings;
-$("preview").onchange = updatePreview;
+$("receiveButton").onclick =
+  () => startReceiver();
+
+$("leaveButton").onclick =
+  () => stopReceiver(true);
+
+$("applyButton").onclick =
+  applySettings;
+
+$("preview").onchange =
+  updatePreview;
 
 if ($("audioMonitorButton")) {
   $("audioMonitorButton").onclick =
@@ -2358,13 +3178,23 @@ $("muteButton").onclick = () => {
 
   audio.muted = !audio.muted;
 
+  if (audioNode && role === "receiver") {
+    audioNode.port.postMessage({
+      type: "mute",
+      value: audio.muted
+    });
+  }
+
   $("muteButton").textContent =
     audio.muted
       ? "🔇 ミュート中"
       : "🔊 音声ON";
 
-  if (!audio.muted) {
-    audio.play().catch(() => {});
+  if (
+    !audio.muted &&
+    audioContext
+  ) {
+    audioContext.resume().catch(() => {});
   }
 };
 
@@ -2372,18 +3202,28 @@ $("muteButton").onclick = () => {
    初期化
 ======================================== */
 
-$("remoteVideo").classList.add("hidden");
-$("remoteCanvas").classList.remove("hidden");
+$("remoteVideo").classList.add(
+  "hidden"
+);
+
+$("remoteCanvas").classList.remove(
+  "hidden"
+);
 
 connect();
 
 updateButtons();
 updatePreview();
 
-setInterval(updateStats, 1000);
+setInterval(
+  updateStats,
+  1000
+);
 
 setInterval(() => {
-  signal({ type: "ping" });
+  signal({
+    type: "ping"
+  });
 }, 15000);
 
 })();
