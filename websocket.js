@@ -8,6 +8,45 @@ const FRAME_AUDIO = 2;
 
 const MAX_BUFFER = 1024 * 1024;
 
+/* ========================================
+   v27.2 音声低遅延設定
+======================================== */
+
+const AUDIO_TIMESLICE = 100;
+
+const AUDIO_TARGET_LATENCY = 0.30;
+const AUDIO_START_LATENCY = 0.25;
+
+const AUDIO_NORMAL_THRESHOLD = 0.45;
+const AUDIO_CATCHUP_THRESHOLD = 0.70;
+const AUDIO_HIGH_THRESHOLD = 1.20;
+
+const AUDIO_MAX_RATE = 1.12;
+
+const AUDIO_QUEUE_LIMIT = 2 * 1024 * 1024;
+
+const AUDIO_KEEP_BEHIND = 10;
+
+let audioLatency = 0;
+let audioPlaybackRate = 1;
+let audioBufferedEnd = 0;
+
+let audioSyncTimer = null;
+let audioCleanupPending = false;
+let audioStartPending = false;
+
+let audioChunksReceived = 0;
+let audioChunksSent = 0;
+
+let audioLastAppendTime = 0;
+let audioLastReceiveTime = 0;
+
+let audioStartPositionSet = false;
+
+/* ========================================
+   WebSocket
+======================================== */
+
 let ws = null;
 let reconnectTimer = null;
 
@@ -229,7 +268,7 @@ function outputSize() {
 }
 
 /* ========================================
-   音声診断
+   音声診断互換
 ======================================== */
 
 function audioSettingsText(settings) {
@@ -250,11 +289,15 @@ function audioSettingsText(settings) {
 }
 
 function updateAudioDiagnostics() {
+  const element = $("audioDiagnostics");
+
+  if (!element) return;
+
   const tracks = localStream?.getAudioTracks() || [];
 
   if (!tracks.length) {
-    $("audioDiagnostics").textContent =
-      "音声トラックなし\n音声共有を有効にしてください。";
+    element.textContent =
+      "音声トラックなし";
 
     updateButtons();
     return;
@@ -263,7 +306,7 @@ function updateAudioDiagnostics() {
   audioCurrentSettings =
     tracks.map(track => track.getSettings());
 
-  $("audioDiagnostics").textContent =
+  element.textContent =
 `========== WebSocket音声診断 ==========
 
 取得トラック数: ${tracks.length}
@@ -278,9 +321,7 @@ ${audioCurrentSettings.map(audioSettingsText).join("\n\n")}
 ${audioMime || "未開始"}
 
 試聴:
-${audioMonitoring ? "ON" : "OFF"}
-
-※「情報なし」は無効化成功を意味しません。`;
+${audioMonitoring ? "ON" : "OFF"}`;
 
   updateButtons();
 }
@@ -321,6 +362,8 @@ async function disableAudioProcessing() {
 function stopAudioMonitor() {
   const audio = $("audioMonitor");
 
+  if (!audio) return;
+
   audio.pause();
   audio.srcObject = null;
 
@@ -342,6 +385,8 @@ async function toggleAudioMonitor() {
   if (!tracks.length) return;
 
   const audio = $("audioMonitor");
+
+  if (!audio) return;
 
   audio.srcObject = new MediaStream(tracks);
   audio.volume = 1;
@@ -425,6 +470,7 @@ function connect() {
 
   socket.onerror = () => {
     if (ws !== socket) return;
+
     status("WebSocket通信エラー");
   };
 }
@@ -970,7 +1016,7 @@ function stopVideoCapture() {
 }
 
 /* ========================================
-   音声送信
+   音声送信 v27.2
 ======================================== */
 
 function startAudioCapture() {
@@ -1008,7 +1054,12 @@ function startAudioCapture() {
       audioBitsPerSecond: 256000
     });
 
-    audioRecorder.ondataavailable = async event => {
+    audioChunksSent = 0;
+
+    // 非同期変換によるチャンクの順序入れ替わりを防ぐ
+    let sendChain = Promise.resolve();
+
+    audioRecorder.ondataavailable = event => {
       if (
         role !== "sender" ||
         !event.data.size
@@ -1016,31 +1067,41 @@ function startAudioCapture() {
         return;
       }
 
-      try {
-        const buffer = await event.data.arrayBuffer();
+      const blob = event.data;
+
+      sendChain = sendChain.then(async () => {
+        if (role !== "sender") return;
+
+        const buffer = await blob.arrayBuffer();
 
         if (
           buffer.byteLength > 256 * 1024 ||
-          ws?.readyState !== WebSocket.OPEN ||
-          ws.bufferedAmount > MAX_BUFFER
+          ws?.readyState !== WebSocket.OPEN
         ) {
+          return;
+        }
+
+        // 音声を優先して送信
+        // 映像は従来どおりバッファ制限でスキップ
+        if (ws.bufferedAmount > MAX_BUFFER) {
           return;
         }
 
         if (sendBinary(FRAME_AUDIO, buffer)) {
           sentAudioBytes += buffer.byteLength;
+          audioChunksSent++;
         }
 
-      } catch (error) {
+      }).catch(error => {
         console.warn("Audio send:", error);
-      }
+      });
     };
 
     audioRecorder.onerror = error => {
       console.warn("MediaRecorder:", error);
     };
 
-    audioRecorder.start(250);
+    audioRecorder.start(AUDIO_TIMESLICE);
 
     updateAudioDiagnostics();
 
@@ -1063,22 +1124,85 @@ function stopAudioCapture() {
 }
 
 /* ========================================
-   音声受信
+   音声受信 v27.2
 ======================================== */
+
+function getAudioBufferInfo() {
+  const audio = $("remoteAudio");
+
+  if (!audio || !audio.buffered.length) {
+    return null;
+  }
+
+  try {
+    const ranges = audio.buffered;
+    const current = audio.currentTime;
+
+    let index = -1;
+
+    for (let i = 0; i < ranges.length; i++) {
+      if (
+        current >= ranges.start(i) - 0.05 &&
+        current <= ranges.end(i) + 0.05
+      ) {
+        index = i;
+        break;
+      }
+    }
+
+    if (index === -1) {
+      index = ranges.length - 1;
+    }
+
+    const start = ranges.start(index);
+    const end = ranges.end(index);
+
+    return {
+      start,
+      end,
+      current,
+      latency: Math.max(0, end - current)
+    };
+
+  } catch {
+    return null;
+  }
+}
 
 function resetAudioReceiver() {
   audioGeneration++;
+
+  if (audioSyncTimer !== null) {
+    clearInterval(audioSyncTimer);
+    audioSyncTimer = null;
+  }
 
   audioQueue = [];
   sourceBuffer = null;
   mediaSource = null;
 
   audioStarted = false;
+  audioStartPending = false;
+  audioStartPositionSet = false;
+
+  audioCleanupPending = false;
+
   pendingAudioBytes = 0;
+
+  audioLatency = 0;
+  audioPlaybackRate = 1;
+  audioBufferedEnd = 0;
+
+  audioChunksReceived = 0;
+
+  audioLastAppendTime = 0;
+  audioLastReceiveTime = 0;
 
   const audio = $("remoteAudio");
 
   audio.pause();
+  audio.playbackRate = 1;
+
   audio.removeAttribute("src");
   audio.load();
 
@@ -1132,6 +1256,15 @@ function initializeAudioReceiver() {
       buffer.addEventListener("updateend", () => {
         if (generation !== audioGeneration) return;
 
+        // 音声データ追加完了後に再生開始を判定
+        tryStartAudio();
+
+        // 古い音声データの削除
+        if (cleanupAudioBuffer()) {
+          return;
+        }
+
+        // 次のチャンクを追加
         flushAudioQueue();
       });
 
@@ -1143,8 +1276,204 @@ function initializeAudioReceiver() {
     }
   }, { once: true });
 
+  audioSyncTimer = setInterval(() => {
+    if (generation !== audioGeneration) return;
+
+    synchronizeAudio();
+  }, 250);
+
   return true;
 }
+
+/* ========================================
+   音声再生開始
+======================================== */
+
+function tryStartAudio() {
+  if (
+    audioStarted ||
+    audioStartPending ||
+    role !== "receiver"
+  ) {
+    return;
+  }
+
+  const audio = $("remoteAudio");
+  const info = getAudioBufferInfo();
+
+  if (!info) return;
+
+  if (info.end - info.start < 0.08) {
+    return;
+  }
+
+  audioStartPending = true;
+
+  // 再生開始時だけ最新音声の近くに移動する。
+  // 再生中の連続ジャンプは行わない。
+  if (!audioStartPositionSet) {
+    audioStartPositionSet = true;
+
+    const target = Math.max(
+      info.start,
+      info.end - AUDIO_START_LATENCY
+    );
+
+    try {
+      if (target > audio.currentTime + 0.05) {
+        audio.currentTime = target;
+      }
+    } catch (error) {
+      console.warn("Audio initial position:", error);
+    }
+  }
+
+  audio.playbackRate = 1;
+  audioPlaybackRate = 1;
+
+  audio.play().then(() => {
+    if (role !== "receiver") return;
+
+    audioStarted = true;
+    audioStartPending = false;
+
+    $("audioStatus").textContent =
+      "音声再生中（低遅延モード）";
+
+  }).catch(error => {
+    audioStartPending = false;
+
+    console.warn("Audio play:", error);
+
+    $("audioStatus").textContent =
+      "音声再生には操作が必要です";
+  });
+}
+
+/* ========================================
+   音声バッファ管理
+======================================== */
+
+function cleanupAudioBuffer() {
+  if (
+    !sourceBuffer ||
+    sourceBuffer.updating ||
+    mediaSource?.readyState !== "open" ||
+    audioCleanupPending
+  ) {
+    return false;
+  }
+
+  const info = getAudioBufferInfo();
+
+  if (!info) return false;
+
+  const removeEnd =
+    info.current - AUDIO_KEEP_BEHIND;
+
+  if (removeEnd <= info.start + 1) {
+    return false;
+  }
+
+  try {
+    audioCleanupPending = true;
+
+    sourceBuffer.remove(
+      info.start,
+      removeEnd
+    );
+
+    return true;
+
+  } catch (error) {
+    console.warn("Audio cleanup:", error);
+    return false;
+
+  } finally {
+    audioCleanupPending = false;
+  }
+}
+
+/* ========================================
+   音声遅延制御
+======================================== */
+
+function synchronizeAudio() {
+  if (role !== "receiver") return;
+
+  const audio = $("remoteAudio");
+  const info = getAudioBufferInfo();
+
+  if (!info) return;
+
+  audioLatency = info.latency;
+  audioBufferedEnd = info.end;
+
+  if (!audioStarted) {
+    tryStartAudio();
+    return;
+  }
+
+  let targetRate = 1;
+
+  if (audioLatency >= AUDIO_HIGH_THRESHOLD) {
+    targetRate = AUDIO_MAX_RATE;
+
+  } else if (
+    audioLatency >= AUDIO_CATCHUP_THRESHOLD
+  ) {
+    targetRate = 1.08;
+
+  } else if (
+    audioLatency >= AUDIO_NORMAL_THRESHOLD
+  ) {
+    targetRate = 1.03;
+
+  } else {
+    targetRate = 1;
+  }
+
+  // 急激な速度変化を避ける
+  const difference =
+    targetRate - audioPlaybackRate;
+
+  const step = Math.max(
+    -0.03,
+    Math.min(0.03, difference)
+  );
+
+  const nextRate = Math.max(
+    1,
+    Math.min(
+      AUDIO_MAX_RATE,
+      audioPlaybackRate + step
+    )
+  );
+
+  if (
+    Math.abs(
+      nextRate - audioPlaybackRate
+    ) > 0.001
+  ) {
+    audioPlaybackRate = nextRate;
+    audio.playbackRate = nextRate;
+  }
+
+  // 音声が一時停止していたら再開を試みる
+  if (
+    audio.paused &&
+    !audioStartPending
+  ) {
+    audio.play().catch(() => {});
+  }
+
+  // バッファ削除はupdateend側でも実行する
+  cleanupAudioBuffer();
+}
+
+/* ========================================
+   音声キュー
+======================================== */
 
 function flushAudioQueue() {
   if (
@@ -1158,26 +1487,15 @@ function flushAudioQueue() {
 
   const buffer = audioQueue.shift();
 
-  pendingAudioBytes -= buffer.byteLength;
+  pendingAudioBytes = Math.max(
+    0,
+    pendingAudioBytes - buffer.byteLength
+  );
 
   try {
     sourceBuffer.appendBuffer(buffer);
 
-    const audio = $("remoteAudio");
-
-    audio.playbackRate = 1;
-
-    if (!audioStarted) {
-      audioStarted = true;
-
-      audio.play().then(() => {
-        $("audioStatus").textContent = "音声再生中";
-
-      }).catch(() => {
-        $("audioStatus").textContent =
-          "音声再生には操作が必要です";
-      });
-    }
+    audioLastAppendTime = performance.now();
 
   } catch (error) {
     console.warn("Audio append:", error);
@@ -1191,14 +1509,25 @@ function receiveAudio(buffer) {
   if (role !== "receiver") return;
 
   receivedAudioBytes += buffer.byteLength;
+  audioChunksReceived++;
+
+  audioLastReceiveTime = performance.now();
 
   if (!mediaSource) {
     if (!initializeAudioReceiver()) return;
   }
 
-  if (pendingAudioBytes > 2 * 1024 * 1024) {
+  if (
+    pendingAudioBytes + buffer.byteLength >
+    AUDIO_QUEUE_LIMIT
+  ) {
     $("audioStatus").textContent =
-      "音声バッファが増加しています";
+      "音声受信キューが増加しています";
+
+    // WebMチャンクを無造作に捨てると
+    // MediaSourceのデコード状態が壊れる場合があるため、
+    // ここでは既存方式と同じく新規チャンクを受け付けない。
+    // この状態が続く場合は別方式への移行が必要。
     return;
   }
 
@@ -1788,6 +2117,12 @@ function updateStats() {
 映像速度: ${videoMbps} Mbps
 音声速度: ${audioKbps} Kbps
 
+【音声】
+方式: MediaRecorder / WebM Opus
+目標ビットレート: 256 Kbps
+送信間隔設定: ${AUDIO_TIMESLICE} ms
+送信チャンク累計: ${audioChunksSent}
+
 映像送信累計:
 ${(sentVideoBytes / 1024 / 1024).toFixed(2)} MB
 
@@ -1817,6 +2152,21 @@ ${ws?.bufferedAmount ?? "?"} bytes
         ? "?"
         : (Number(videoRate) * 8 / 1e6).toFixed(2);
 
+    const audio = $("remoteAudio");
+    const info = getAudioBufferInfo();
+
+    const latencyText = info
+      ? `${(info.latency * 1000).toFixed(0)} ms`
+      : "計測待機中";
+
+    const audioState = !mediaSource
+      ? "音声未受信"
+      : audioStarted
+        ? audio.paused
+          ? "一時停止中"
+          : "再生中"
+        : "再生準備中";
+
     $("receiverStats").textContent =
 `========== WebSocket受信 ==========
 
@@ -1835,6 +2185,27 @@ ${(receivedVideoBytes / 1024 / 1024).toFixed(2)} MB
 
 音声受信累計:
 ${(receivedAudioBytes / 1024 / 1024).toFixed(2)} MB
+
+【音声同期 v27.2】
+再生状態: ${audioState}
+
+音声バッファ先端との差:
+${latencyText}
+
+再生速度:
+${audio.playbackRate.toFixed(3)} 倍
+
+受信チャンク累計:
+${audioChunksReceived}
+
+未処理キュー:
+${audioQueue.length} チャンク
+
+未処理データ:
+${(pendingAudioBytes / 1024).toFixed(1)} KB
+
+※音声バッファ先端との差は
+映像との正確な同期誤差ではありません。
 
 最終映像フレーム:
 ${lastFrameAt
@@ -1871,10 +2242,15 @@ $("leaveButton").onclick = () => stopReceiver(true);
 $("applyButton").onclick = applySettings;
 $("preview").onchange = updatePreview;
 
-$("audioMonitorButton").onclick = toggleAudioMonitor;
+if ($("audioMonitorButton")) {
+  $("audioMonitorButton").onclick =
+    toggleAudioMonitor;
+}
 
-$("audioProcessingButton").onclick =
-  disableAudioProcessing;
+if ($("audioProcessingButton")) {
+  $("audioProcessingButton").onclick =
+    disableAudioProcessing;
+}
 
 $("fullscreen").onclick = () => {
   remoteCanvas.requestFullscreen?.();
