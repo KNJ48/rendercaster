@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>WebRTC Caster Audio Test</title>
+
+<style>
+body {
+  background: #101114;
+  color: #eee;
+  font-family: system-ui, sans-serif;
+  padding: 24px;
+}
+
+#error {
+  white-space: pre-wrap;
+  color: #ffbd59;
+}
+</style>
+</head>
+
+<body>
+
+<h1>📡 WebRTC Caster</h1>
+
+<p>音声品質テスト版を読み込んでいます...</p>
+
+<pre id="error"></pre>
+
+<script>
+"use strict";
+
+(async () => {
+  try {
+    /*
+     * 保存済みのWebRTC v22.2を取得。
+     *
+     * 元ファイルは変更しない。
+     */
+    const response = await fetch(
+      "/index.html",
+      {
+        cache: "no-store"
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `index.html取得失敗: ${response.status}`
+      );
+    }
+
+    let html = await response.text();
+
+    /*
+     * 音声処理の無効化を要求する関数。
+     *
+     * index.htmlのスクリプト内に追加する。
+     */
+    const audioFunction = `
+async function configureRawAudio(stream) {
+  const tracks = stream.getAudioTracks();
+
+  if (!tracks.length) {
+    console.warn("音声トラックなし");
+    return;
+  }
+
+  const supported =
+    navigator.mediaDevices.getSupportedConstraints();
+
+  for (const track of tracks) {
+    const constraints = {};
+
+    if (supported.echoCancellation) {
+      constraints.echoCancellation = false;
+    }
+
+    if (supported.noiseSuppression) {
+      constraints.noiseSuppression = false;
+    }
+
+    if (supported.autoGainControl) {
+      constraints.autoGainControl = false;
+    }
+
+    try {
+      if (Object.keys(constraints).length) {
+        await track.applyConstraints(constraints);
+      }
+    } catch (error) {
+      console.warn(
+        "音声処理設定:",
+        error
+      );
+    }
+
+    const actual = track.getSettings();
+
+    console.log(
+      "WebRTC音声設定:",
+      actual
+    );
+
+    const info =
+      document.getElementById("resolutionInfo");
+
+    if (info) {
+      const audioInfo =
+        document.createElement("pre");
+
+      audioInfo.id = "rawAudioInfo";
+
+      audioInfo.textContent =
+        "========== 音声設定 ==========\\n" +
+        "エコーキャンセル: " +
+        (actual.echoCancellation ?? "情報なし") +
+        "\\nノイズ抑制: " +
+        (actual.noiseSuppression ?? "情報なし") +
+        "\\n自動音量調整: " +
+        (actual.autoGainControl ?? "情報なし") +
+        "\\nチャンネル数: " +
+        (actual.channelCount ?? "情報なし");
+
+      document.getElementById(
+        "rawAudioInfo"
+      )?.remove();
+
+      info.insertAdjacentElement(
+        "afterend",
+        audioInfo
+      );
+    }
+  }
+}
+`;
+
+    /*
+     * 元の画面共有処理を探す。
+     */
+    const original = `localStream =
+      await navigator.mediaDevices.getDisplayMedia({
+        video: initialCaptureConstraints(settings),
+        audio: settings.audio
+      });`;
+
+    const replacement = `${original}
+
+    if (settings.audio) {
+      await configureRawAudio(localStream);
+    }`;
+
+    if (!html.includes(original)) {
+      throw new Error(
+        "音声取得処理が見つかりません。" +
+        "index.htmlのバージョンを確認してください。"
+      );
+    }
+
+    html = html.replace(
+      original,
+      replacement
+    );
+
+    /*
+     * 元のスクリプト開始部分に
+     * 音声設定関数を追加。
+     */
+    const marker = `"use strict";`;
+
+    if (!html.includes(marker)) {
+      throw new Error(
+        "JavaScript開始位置が見つかりません"
+      );
+    }
+
+    html = html.replace(
+      marker,
+      marker + "\n" + audioFunction
+    );
+
+    /*
+     * タイトルをテスト版に変更。
+     */
+    html = html.replace(
+      "<title>WebRTC Caster v22.2</title>",
+      "<title>WebRTC Caster Audio Test</title>"
+    );
+
+    /*
+     * 元HTMLを現在のページで実行。
+     */
+    document.open();
+    document.write(html);
+    document.close();
+
+  } catch (error) {
+    console.error(error);
+
+    document.getElementById(
+      "error"
+    ).textContent =
+      "音声テスト版の起動に失敗しました。\n" +
+      error.message;
+  }
+})();
+</script>
+
+</body>
+</html>
