@@ -14,6 +14,10 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
+app.get("/webrtc.js", (req, res) => {
+  res.sendFile(path.join(__dirname, "webrtc.js"));
+});
+
 app.get("/websocket.html", (req, res) => {
   res.sendFile(path.join(__dirname, "websocket.html"));
 });
