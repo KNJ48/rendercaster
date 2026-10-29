@@ -7,6 +7,9 @@ const FRAME_AUDIO = 2;
 
 const MAX_BUFFER = 1024 * 1024;
 
+const AUDIO_BITRATE = 256000;
+const AUDIO_CHUNK_MS = 250;
+
 let ws = null;
 let reconnectTimer = null;
 
@@ -42,7 +45,6 @@ let captureTimer = null;
 let captureBusy = false;
 
 let captureToken = 0;
-
 let lastEncodeTime = 0;
 
 /* ========================================
@@ -51,6 +53,8 @@ let lastEncodeTime = 0;
 
 let audioRecorder = null;
 let audioMime = "";
+
+let audioCaptureInfo = "音声未取得";
 
 /* ========================================
    統計
@@ -242,6 +246,93 @@ function outputSize() {
 }
 
 /* ========================================
+   音声処理無効化
+======================================== */
+
+/*
+ * v27 Audio Quality Edition
+ *
+ * ブラウザが対応している音声処理について、
+ * 無効化を要求する。
+ *
+ * 画面共有音声ではブラウザ側が
+ * 対応しない場合がある。
+ */
+
+async function configureRawAudio(stream) {
+  const tracks = stream.getAudioTracks();
+
+  if (!tracks.length) {
+    audioCaptureInfo =
+      "音声トラックなし";
+
+    console.warn(
+      "画面共有音声が取得されていません"
+    );
+
+    return;
+  }
+
+  const supported =
+    navigator.mediaDevices.getSupportedConstraints();
+
+  for (const track of tracks) {
+    const constraints = {};
+
+    if (supported.echoCancellation) {
+      constraints.echoCancellation = false;
+    }
+
+    if (supported.noiseSuppression) {
+      constraints.noiseSuppression = false;
+    }
+
+    if (supported.autoGainControl) {
+      constraints.autoGainControl = false;
+    }
+
+    try {
+      if (Object.keys(constraints).length) {
+        await track.applyConstraints(constraints);
+      }
+    } catch (error) {
+      console.warn(
+        "音声処理の無効化に失敗:",
+        error
+      );
+    }
+
+    const actual = track.getSettings();
+
+    console.log(
+      "========== 音声設定 =========="
+    );
+
+    console.log("トラック:", track.label);
+    console.log("設定:", actual);
+
+    audioCaptureInfo =
+`トラック: ${track.label || "名称不明"}
+
+エコーキャンセル:
+${actual.echoCancellation ?? "情報なし"}
+
+ノイズ抑制:
+${actual.noiseSuppression ?? "情報なし"}
+
+自動音量調整:
+${actual.autoGainControl ?? "情報なし"}
+
+チャンネル数:
+${actual.channelCount ?? "情報なし"}
+
+サンプルレート:
+${actual.sampleRate ?? "情報なし"}`;
+
+  }
+}
+
+/* ========================================
    WebSocket接続
 ======================================== */
 
@@ -386,10 +477,6 @@ async function applyCaptureSettings(settings) {
       ideal: size.height
     };
   } else {
-    /*
-     * 元画質に戻す場合、
-     * 利用可能な最大解像度を希望する。
-     */
     const capabilities =
       track.getCapabilities?.();
 
@@ -457,8 +544,15 @@ ${appliedSettings.jpegQuality}
 処理方式:
 ${workerMode ? "VideoFrame + Worker" : "Canvas互換モード"}
 
-音声トラック:
-${localStream.getAudioTracks().length ? "取得成功" : "なし"}
+========== 音声 ==========
+
+${audioCaptureInfo}
+
+エンコード目標:
+${AUDIO_BITRATE / 1000} Kbps
+
+※音声処理の設定が「情報なし」の場合、
+無効化できたかは確認できません。
 
 ※実際の送信FPSは統計で確認できます。`;
 }
@@ -585,12 +679,6 @@ async function startWorkerCapture() {
       }
     });
 
-    /*
-     * MediaStreamTrack自体はWorkerへ転送しない。
-     *
-     * メインスレッドでフレームを取得し、
-     * VideoFrameだけWorkerへ転送する。
-     */
     processor = new MediaStreamTrackProcessor({
       track
     });
@@ -690,10 +778,6 @@ async function processVideoFrames() {
         error
       );
 
-      /*
-       * 実行中にProcessorが失敗した場合は
-       * Canvas互換モードへ切り替える。
-       */
       await stopWorkerCapture();
 
       if (
@@ -971,7 +1055,7 @@ function stopVideoCapture() {
 }
 
 /* ========================================
-   音声送信
+   音声送信 v27
 ======================================== */
 
 function startAudioCapture() {
@@ -979,7 +1063,7 @@ function startAudioCapture() {
     localStream?.getAudioTracks() || [];
 
   if (!tracks.length) {
-    console.log(
+    console.warn(
       "音声トラックがありません"
     );
 
@@ -1018,8 +1102,18 @@ function startAudioCapture() {
       stream,
       {
         mimeType: audioMime,
-        audioBitsPerSecond: 128000
+        audioBitsPerSecond: AUDIO_BITRATE
       }
+    );
+
+    console.log(
+      "音声エンコード:",
+      audioRecorder.mimeType
+    );
+
+    console.log(
+      "音声ビットレート目標:",
+      AUDIO_BITRATE
     );
 
     audioRecorder.ondataavailable = async event => {
@@ -1071,7 +1165,7 @@ function startAudioCapture() {
       );
     };
 
-    audioRecorder.start(250);
+    audioRecorder.start(AUDIO_CHUNK_MS);
 
   } catch (error) {
     console.warn(
@@ -1098,7 +1192,7 @@ function stopAudioCapture() {
 }
 
 /* ========================================
-   音声受信
+   音声受信 v27
 ======================================== */
 
 function resetAudioReceiver() {
@@ -1151,6 +1245,7 @@ function initializeAudioReceiver() {
   const audio = $("remoteAudio");
 
   audio.src = audioObjectURL;
+  audio.playbackRate = 1.0;
 
   source.addEventListener(
     "sourceopen",
@@ -1217,6 +1312,17 @@ function flushAudioQueue() {
 
     const audio = $("remoteAudio");
 
+    /*
+     * v27
+     *
+     * 再生速度は通常速度。
+     *
+     * 音楽の途中を飛ばすような
+     * currentTimeの強制変更は行わない。
+     */
+
+    audio.playbackRate = 1.0;
+
     if (!audioStarted) {
       audioStarted = true;
 
@@ -1228,21 +1334,6 @@ function flushAudioQueue() {
         $("audioStatus").textContent =
           "音声再生には操作が必要です";
       });
-    }
-
-    if (audio.buffered.length) {
-      const end = audio.buffered.end(
-        audio.buffered.length - 1
-      );
-
-      if (
-        end - audio.currentTime > 1.5
-      ) {
-        audio.currentTime = Math.max(
-          0,
-          end - 0.4
-        );
-      }
     }
 
   } catch (error) {
@@ -1331,6 +1422,18 @@ async function startSender() {
       );
     }
 
+    /*
+     * v27
+     *
+     * 音声処理をできるだけ無効化する。
+     */
+
+    if (settings.audio) {
+      await configureRawAudio(localStream);
+    } else {
+      audioCaptureInfo = "音声共有OFF";
+    }
+
     role = "sender";
     currentRoom = room;
     appliedSettings = settings;
@@ -1416,6 +1519,8 @@ function stopSender(sendLeave = true) {
 
   localStream = null;
   appliedSettings = null;
+
+  audioCaptureInfo = "音声未取得";
 
   $("localVideo").srcObject = null;
 
